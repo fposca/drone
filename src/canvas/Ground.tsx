@@ -19,7 +19,10 @@ export function Ground() {
   colorMap.colorSpace = THREE.SRGBColorSpace;
 
   return (
-    <RigidBody type="fixed">
+    <RigidBody
+      type="fixed"
+      userData={{ type: 'danger-ground' }} // 👈 piso que hace daño
+    >
       {/* collider físico */}
       <CuboidCollider args={[100, 0.5, 100]} position={[0, -0.5, 0]} />
 

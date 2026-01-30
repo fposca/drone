@@ -7,10 +7,14 @@ import { useKeyboardInput } from '../input/useKeyboardInput';
 import { DroneModel } from './DroneModel';
 
 type DroneRigProps = {
-  freeLook?: boolean;
+   freeLook?: boolean;
+  onHit?: () => void;
+  resetSignal?: number;
+  disabled?: boolean;    // ✅ nuevo
 };
 
-export function DroneRig({ freeLook = false }: DroneRigProps) {
+export function DroneRig({ freeLook = false, onHit, resetSignal = 0, disabled = false }: DroneRigProps) {
+
   const rbRef = useRef<RapierRigidBody | null>(null);
   const keys = useKeyboardInput();
 
@@ -19,25 +23,39 @@ export function DroneRig({ freeLook = false }: DroneRigProps) {
   const camOffset = useRef(new THREE.Vector3(0, 2, 6));
   const camPos = useRef(new THREE.Vector3());
   const camTarget = useRef(new THREE.Vector3());
+  const lastResetSeen = useRef(resetSignal);
+
+  // ✅ cooldown para que no reste 5 vidas de una
+  const lastHitRef = useRef(0);
+  const HIT_COOLDOWN = 0.6; // segundos
 
   const setRigidBody = useCallback((rb: RapierRigidBody | null) => {
     rbRef.current = rb;
   }, []);
 
-  useFrame(() => {
-    const rb = rbRef.current;
-    if (!rb) return;
+ useFrame(() => {
+  const rb = rbRef.current;
+  if (!rb) return;
 
-    // Posición actual (una sola vez)
-    const pos = rb.translation();
+  if (lastResetSeen.current !== resetSignal) {
+    lastResetSeen.current = resetSignal;
+
+    rb.setTranslation({ x: 0, y: 2, z: 0 }, true);
+    rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    rb.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+  }
+
+  // si el juego está en Game Over, no aplicar controles
+  if (disabled) return;
+
+  const pos = rb.translation();
 
     // =========================
     // Ground clamp (no atraviesa)
     // =========================
-    const GROUND_Y = 0; // cara superior del piso (si tu box está centrado en -0.5 y mide 1)
-    // 🚨 tu drone ahora es más alto que 0.15, así que subimos el half height
-    // Ajustalo si agrandás más el modelo:
-    const DRONE_HALF_HEIGHT = 0.20; // ✅ más realista con tu modelo actual
+    const GROUND_Y = 0;
+    const DRONE_HALF_HEIGHT = 0.20;
     const GROUND_EPS = 0.01;
     const minY = GROUND_Y + DRONE_HALF_HEIGHT + GROUND_EPS;
 
@@ -45,12 +63,9 @@ export function DroneRig({ freeLook = false }: DroneRigProps) {
       rb.setTranslation({ x: pos.x, y: minY, z: pos.z }, true);
 
       const vNow = rb.linvel();
-      if (vNow.y < 0) {
-        rb.setLinvel({ x: vNow.x, y: 0, z: vNow.z }, true);
-      }
+      if (vNow.y < 0) rb.setLinvel({ x: vNow.x, y: 0, z: vNow.z }, true);
     }
 
-    // Velocidad actual
     const v = rb.linvel();
 
     // =========================
@@ -59,28 +74,24 @@ export function DroneRig({ freeLook = false }: DroneRigProps) {
     const up = keys.throttleUp;
     const down = keys.throttleDown;
 
-    const MAX_UP = 3.2;      // ✅ más lento (antes 5.8 era bastante)
-    const MAX_DOWN = -2.6;   // ✅ bajada más controlada
-    const ACCEL = 3.5;       // ✅ respuesta suave
+    const MAX_UP = 3.2;
+    const MAX_DOWN = -2.6;
+    const ACCEL = 3.5;
 
     let vyTarget = 0;
     if (up) vyTarget = MAX_UP;
     if (down) vyTarget = MAX_DOWN;
-
-    // si está en el piso, anulá el down
-    if (down && pos.y <= minY + 0.001) {
-      vyTarget = 0;
-    }
+    if (down && pos.y <= minY + 0.001) vyTarget = 0;
 
     const ay = (vyTarget - v.y) * ACCEL;
 
     // =========================
-    // Avance lateral WASD (DJI beginner)
+    // Avance lateral WASD
     // =========================
     const ix = (keys.right ? 1 : 0) + (keys.left ? -1 : 0);
     const iz = (keys.back ? 1 : 0) + (keys.forward ? -1 : 0);
 
-    const MAX_H_SPEED = 3.0; // ✅ más controlado
+    const MAX_H_SPEED = 3.0;
     const H_ACCEL = 2.2;
 
     const vxTarget = ix * MAX_H_SPEED;
@@ -89,32 +100,21 @@ export function DroneRig({ freeLook = false }: DroneRigProps) {
     const ax = (vxTarget - v.x) * H_ACCEL;
     const az = (vzTarget - v.z) * H_ACCEL;
 
-    // =========================
-    // Aplicamos fuerzas (vertical + horizontal)
-    // =========================
     const m = rb.mass();
     rb.addForce({ x: m * ax, y: m * ay, z: m * az }, true);
 
-    // =========================
-    // Clamp hard de velocidad total (usando la vel actualizada)
-    // =========================
-    const v2 = rb.linvel(); // ✅ leer después de aplicar fuerzas
-
-    const CLAMP_VX = 5;
-    const CLAMP_VY = 4;
-    const CLAMP_VZ = 5;
-
+    const v2 = rb.linvel();
     rb.setLinvel(
       {
-        x: Math.max(-CLAMP_VX, Math.min(CLAMP_VX, v2.x)),
-        y: Math.max(-CLAMP_VY, Math.min(CLAMP_VY, v2.y)),
-        z: Math.max(-CLAMP_VZ, Math.min(CLAMP_VZ, v2.z)),
+        x: Math.max(-5, Math.min(5, v2.x)),
+        y: Math.max(-4, Math.min(4, v2.y)),
+        z: Math.max(-5, Math.min(5, v2.z)),
       },
       true
     );
 
     // =========================
-    // Cámara follow estilo DJI (solo si NO está freeLook)
+    // Cámara follow
     // =========================
     if (!freeLook) {
       camPos.current.set(pos.x, pos.y, pos.z).add(camOffset.current);
@@ -133,6 +133,19 @@ export function DroneRig({ freeLook = false }: DroneRigProps) {
       angularDamping={3}
       colliders="cuboid"
       ccd
+      userData={{ type: 'drone' }}
+      onCollisionEnter={(e) => {
+        const otherType = (e.other.rigidBodyObject?.userData as any)?.type;
+
+        // ✅ por ahora: si toca el piso peligroso o un obstáculo, resta vida
+        if (otherType === 'danger-ground' || otherType === 'obstacle') {
+          const now = performance.now() / 1000;
+          if (now - lastHitRef.current < HIT_COOLDOWN) return;
+          lastHitRef.current = now;
+
+          onHit?.();
+        }
+      }}
     >
       <group>
         <DroneModel />
