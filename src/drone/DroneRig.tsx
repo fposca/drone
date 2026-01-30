@@ -3,17 +3,18 @@ import type { RapierRigidBody } from '@react-three/rapier';
 import { useRef, useCallback } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useKeyboardInput } from '../input/useKeyboardInput';
+import { usePlayerInput } from '../input/usePlayerInput';
 import { DroneModel } from './DroneModel';
 
 type DroneRigProps = {
   freeLook?: boolean;
   onHit?: () => void;
-  onHitFlash?: () => void; // ✅ nuevo (para pantalla roja)
+  onHitFlash?: () => void;
   resetSignal?: number;
   disabled?: boolean;
-  windLevel?: number; // ✅ por si querés agregar viento
-  freeze?: boolean; // ✅ nuevo (para congelar el drone)
+  windLevel?: number;
+  freeze?: boolean;
+  onPosition?: (p: THREE.Vector3) => void;
 };
 
 export function DroneRig({
@@ -24,11 +25,12 @@ export function DroneRig({
   disabled = false,
   windLevel = 1,
   freeze = false,
-
-
+  onPosition,
 }: DroneRigProps) {
   const rbRef = useRef<RapierRigidBody | null>(null);
-  const keys = useKeyboardInput();
+
+  // ✅ Nuevo input unificado teclado+joystick
+  const input = usePlayerInput();
 
   // Cámara follow
   const { camera } = useThree();
@@ -45,18 +47,24 @@ export function DroneRig({
     rbRef.current = rb;
   }, []);
 
-  // ===== Auto-level helpers =====
+  // Auto-level helpers
   const q = useRef(new THREE.Quaternion());
   const qTarget = useRef(new THREE.Quaternion());
   const upWorld = useRef(new THREE.Vector3(0, 1, 0));
   const upBody = useRef(new THREE.Vector3());
   const axis = useRef(new THREE.Vector3());
 
+  const tmpPos = useRef(new THREE.Vector3());
+
   useFrame((_, dt) => {
+    // ✅ refrescar input (teclado + joystick)
+    const readRef = (input as any).__read as React.MutableRefObject<() => void> | undefined;
+    readRef?.current?.();
+
     const rb = rbRef.current;
     if (!rb) return;
 
-    // ===== RESET =====
+    // RESET
     if (lastResetSeen.current !== resetSignal) {
       lastResetSeen.current = resetSignal;
 
@@ -64,28 +72,28 @@ export function DroneRig({
       rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
       rb.setAngvel({ x: 0, y: 0, z: 0 }, true);
       rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
-
     }
 
-     // ✅ CONGELADO durante "Nivel completado"
-  if (freeze) {
-    // importantísimo: matar toda inercia
-    rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    rb.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    // FREEZE (nivel completado)
+    if (freeze) {
+      rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      rb.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      rb.setTranslation({ x: 0, y: 2, z: 0 }, true);
+      rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+      return;
+    }
 
-    // opcional: mantenerlo en la base mientras se muestra el cartel
-    rb.setTranslation({ x: 0, y: 2, z: 0 }, true);
-    rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
-    return;
-  }
-    // si está disabled (game over / intro), no aplicar controles ni auto-level
     if (disabled) return;
 
     const pos = rb.translation();
 
-    // =========================
+    // reportar posición
+    if (onPosition) {
+      tmpPos.current.set(pos.x, pos.y, pos.z);
+      onPosition(tmpPos.current);
+    }
+
     // Ground clamp
-    // =========================
     const GROUND_Y = 0;
     const DRONE_HALF_HEIGHT = 0.2;
     const GROUND_EPS = 0.01;
@@ -98,35 +106,24 @@ export function DroneRig({
       if (vNow.y < 0) rb.setLinvel({ x: vNow.x, y: 0, z: vNow.z }, true);
     }
 
-    // =========================
-    // AUTO-LEVEL (endereza suave)
-    // - mantiene yaw (giro sobre Y)
-    // - corrige pitch/roll
-    // =========================
+    // AUTO-LEVEL
     if (!freeLook) {
-      const rot = rb.rotation(); // {x,y,z,w}
+      const rot = rb.rotation();
       q.current.set(rot.x, rot.y, rot.z, rot.w);
 
-      // up del drone en mundo
       upBody.current.set(0, 1, 0).applyQuaternion(q.current).normalize();
 
-      // cuánto está inclinado (ángulo entre up del drone y up mundo)
       const angle = Math.acos(
         THREE.MathUtils.clamp(upBody.current.dot(upWorld.current), -1, 1)
       );
 
-      // si está inclinado, armamos una corrección sobre el eje perpendicular
       if (angle > 0.0001) {
         axis.current.crossVectors(upBody.current, upWorld.current).normalize();
 
-        // fuerza de auto-level (ajustá)
-        const LEVEL_STRENGTH = 6.5; // más alto = endereza más rápido
-        const t = 1 - Math.exp(-LEVEL_STRENGTH * dt); // smoothing estable por dt
+        const LEVEL_STRENGTH = 6.5;
+        const t = 1 - Math.exp(-LEVEL_STRENGTH * dt);
 
-        // rotación de corrección parcial
         qTarget.current.setFromAxisAngle(axis.current, angle * t);
-
-        // aplicamos: qNew = qCorrection * q
         qTarget.current.multiply(q.current);
 
         rb.setRotation(
@@ -134,79 +131,69 @@ export function DroneRig({
           true
         );
 
-        // opcional: amortiguar rotación angular para que no “siga girando”
         const av = rb.angvel();
-        const DAMP = 0.92; // 0.9–0.98
+        const DAMP = 0.92;
         rb.setAngvel({ x: av.x * DAMP, y: av.y, z: av.z * DAMP }, true);
       }
     }
 
-    // =========================
-    // Movimiento
-    // =========================
+    // MOVIMIENTO (ahora analógico)
     const v = rb.linvel();
 
-    // vertical
-    const up = keys.throttleUp;
-    const down = keys.throttleDown;
-
+    // lift: input.lift => +1 subir, -1 bajar
     const MAX_UP = 3.2;
     const MAX_DOWN = -2.6;
     const ACCEL = 3.5;
 
     let vyTarget = 0;
-    if (up) vyTarget = MAX_UP;
-    if (down) vyTarget = MAX_DOWN;
-    if (down && pos.y <= minY + 0.001) vyTarget = 0;
+    if (input.lift > 0.05) vyTarget = MAX_UP * input.lift;
+    if (input.lift < -0.05) vyTarget = MAX_DOWN * (-input.lift);
+
+    if (input.lift < -0.05 && pos.y <= minY + 0.001) vyTarget = 0;
 
     const ay = (vyTarget - v.y) * ACCEL;
 
-    // horizontal
-    const ix = (keys.right ? 1 : 0) + (keys.left ? -1 : 0);
-    const iz = (keys.back ? 1 : 0) + (keys.forward ? -1 : 0);
-
-    const MAX_H_SPEED = 3.0;
+    // horizontal: moveX/moveZ
+    const MAX_H_SPEED = input.boost ? 4.2 : 3.0;
     const H_ACCEL = 2.2;
 
-    const vxTarget = ix * MAX_H_SPEED;
-    const vzTarget = iz * MAX_H_SPEED;
+    const vxTarget = input.moveX * MAX_H_SPEED;
+
+    // ojo: moveZ (adelante=-1) => queremos vz negativo para ir “adelante”
+    const vzTarget = input.moveZ * MAX_H_SPEED;
 
     const ax = (vxTarget - v.x) * H_ACCEL;
     const az = (vzTarget - v.z) * H_ACCEL;
 
     const m = rb.mass();
     rb.addForce({ x: m * ax, y: m * ay, z: m * az }, true);
-    // =========================
-    // Viento (nivel 2+)
-    // =========================
-    const t = performance.now() / 1000;
 
-let windStrength = 0;
-if (windLevel === 2) windStrength = 0.22;  // ✅ MUCHO más bajo
-if (windLevel >= 3) windStrength = 0.38;
+    // VIENTO
+    const tNow = performance.now() / 1000;
 
-// ráfagas suaves
-const gust = 0.6 + 0.4 * Math.sin(t * 0.25);
-const windX = Math.sin(t * 0.35) * windStrength * gust;
-const windZ = Math.cos(t * 0.28) * windStrength * 0.55 * gust;
+    let windStrength = 0;
+    if (windLevel === 2) windStrength = 0.22;
+    if (windLevel >= 3) windStrength = 0.38;
 
-if (windStrength > 0) {
-  rb.addForce({ x: windX, y: 0, z: windZ }, true);
+    const gust = 0.6 + 0.4 * Math.sin(tNow * 0.25);
+    const windX = Math.sin(tNow * 0.35) * windStrength * gust;
+    const windZ = Math.cos(tNow * 0.28) * windStrength * 0.55 * gust;
 
-  // ✅ clamp extra para que no te arrastre infinito
-  const vNow = rb.linvel();
-  const maxWindSpeed = windLevel === 2 ? 3.2 : 3.8;
+    if (windStrength > 0) {
+      rb.addForce({ x: windX, y: 0, z: windZ }, true);
 
-  rb.setLinvel(
-    {
-      x: THREE.MathUtils.clamp(vNow.x, -maxWindSpeed, maxWindSpeed),
-      y: vNow.y,
-      z: THREE.MathUtils.clamp(vNow.z, -maxWindSpeed, maxWindSpeed),
-    },
-    true
-  );
-}
+      const vNow = rb.linvel();
+      const maxWindSpeed = windLevel === 2 ? 3.2 : 3.8;
 
+      rb.setLinvel(
+        {
+          x: THREE.MathUtils.clamp(vNow.x, -maxWindSpeed, maxWindSpeed),
+          y: vNow.y,
+          z: THREE.MathUtils.clamp(vNow.z, -maxWindSpeed, maxWindSpeed),
+        },
+        true
+      );
+    }
 
     // cámara follow
     if (!freeLook) {
@@ -236,7 +223,7 @@ if (windStrength > 0) {
           lastHitRef.current = now;
 
           onHit?.();
-          onHitFlash?.(); // ✅ pantalla roja
+          onHitFlash?.();
         }
       }}
     >

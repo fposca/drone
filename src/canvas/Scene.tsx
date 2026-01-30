@@ -2,6 +2,7 @@ import { Canvas } from '@react-three/fiber';
 import { Sky, Environment, OrbitControls, Preload } from '@react-three/drei';
 import { Physics } from '@react-three/rapier';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as THREE from 'three';
 
 import { LoaderOverlay } from './LoaderOverlay';
 import { DroneRig } from '../drone/DroneRig';
@@ -10,6 +11,49 @@ import { CloudsDrei } from './CloudsDrei';
 import { SafePad } from './SafePad';
 import { Obstacles } from './Obstacles';
 import { Pickups } from './Pickups';
+import { BossDrone } from './BossDrone';
+
+type Level = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+
+function Moon({ level }: { level: Level }) {
+  // desde lvl 5 aparece la luna
+  if (level < 5) return null;
+
+  // a medida que sube el nivel, la luna se ve más grande/brillante
+  const scale = level >= 8 ? 2.2 : level >= 7 ? 1.9 : level >= 6 ? 1.6 : 1.3;
+  const opacity = level >= 8 ? 1 : 0.85;
+
+  return (
+    <group position={[-55, 65, -160]}>
+      <mesh scale={scale}>
+        <sphereGeometry args={[6, 28, 20]} />
+        <meshStandardMaterial
+          color="#e8eef7"
+          emissive="#c9d6ff"
+          emissiveIntensity={0.55}
+          roughness={0.9}
+          metalness={0.05}
+          transparent
+          opacity={opacity}
+        />
+      </mesh>
+
+      {/* glow fake */}
+      <mesh scale={scale * 1.25}>
+        <sphereGeometry args={[6.6, 18, 14]} />
+        <meshStandardMaterial
+          color="#a6b9ff"
+          emissive="#a6b9ff"
+          emissiveIntensity={0.45}
+          transparent
+          opacity={0.10}
+          roughness={1}
+          metalness={0}
+        />
+      </mesh>
+    </group>
+  );
+}
 
 export function Scene() {
   // =========================
@@ -34,8 +78,9 @@ export function Scene() {
   const onHitFlash = useCallback(() => {
     setHitFlash(true);
     if (hitFlashTimeout.current) window.clearTimeout(hitFlashTimeout.current);
-    hitFlashTimeout.current = window.setTimeout(() => setHitFlash(false), 120);
+    hitFlashTimeout.current = window.setTimeout(() => setHitFlash(false), 140);
   }, []);
+
 
   useEffect(() => {
     return () => {
@@ -47,40 +92,82 @@ export function Scene() {
   // Game state
   // =========================
   const MAX_HITS = 5;
+
   const [hitsLeft, setHitsLeft] = useState(MAX_HITS);
   const [status, setStatus] = useState<'playing' | 'won' | 'lost'>('playing');
   const [resetSignal, setResetSignal] = useState(0);
   const [hasStarted, setHasStarted] = useState(false);
+  const MAX_LEVEL = 8 as const;
+  type Level = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
-  const [level, setLevel] = useState<1 | 2 | 3>(1);
+  const levelUpTimeoutRef = useRef<number | null>(null);
+
+
+  const [level, setLevel] = useState<Level>(1);
   const [score, setScore] = useState(0);
 
-  // monedas por nivel
-  const COINS_PER_LEVEL = useMemo<Record<1 | 2 | 3, number>>(
-    () => ({ 1: 2, 2: 10, 3: 14 }),
+  const COINS_PER_LEVEL = useMemo<Record<Level, number>>(
+    () => ({
+      1: 2,
+      2: 6,
+      3: 8,
+      4: 10,  // desde acá se pone oscuro
+      5: 10,  // aparece luna
+      6: 12,
+      7: 14,
+      8: 16,  // boss + coins
+    }),
     []
   );
+
   const coinsTotal = COINS_PER_LEVEL[level];
 
-  // transición de nivel
+  // transición nivel
   const [levelCleared, setLevelCleared] = useState(false);
-  const [nextLevel, setNextLevel] = useState<1 | 2 | 3>(1);
-  const levelTimerRef = useRef<number | null>(null);
+  const [nextLevel, setNextLevel] = useState<Level>(2);
 
-  const restart = useCallback(() => {
+  // posición del drone (para boss)
+  const dronePosRef = useRef(new THREE.Vector3(0, 2, 0));
+
+  // =========================
+  // Visuales por nivel
+  // =========================
+  const visuals = useMemo(() => {
+    const v: Record<Level, { bg: string; fog: string; env: any; skyOn: boolean; clouds: boolean; ambient: number; dir: number }> = {
+      1: { bg: '#87ceeb', fog: '#87ceeb', env: 'sunset', skyOn: true, clouds: true, ambient: 0.35, dir: 1.2 },
+      2: { bg: '#6f7f91', fog: '#6f7f91', env: 'sunset', skyOn: true, clouds: true, ambient: 0.30, dir: 1.0 },
+      3: { bg: '#4c5a6b', fog: '#4c5a6b', env: 'sunset', skyOn: true, clouds: true, ambient: 0.24, dir: 0.9 },
+      4: { bg: '#2b3340', fog: '#2b3340', env: 'night', skyOn: true, clouds: false, ambient: 0.18, dir: 0.75 },
+      5: { bg: '#1b1f2a', fog: '#1b1f2a', env: 'night', skyOn: true, clouds: false, ambient: 0.14, dir: 0.65 },
+      6: { bg: '#11131a', fog: '#11131a', env: 'night', skyOn: true, clouds: false, ambient: 0.12, dir: 0.55 },
+      7: { bg: '#080a10', fog: '#080a10', env: 'night', skyOn: false, clouds: false, ambient: 0.10, dir: 0.45 },
+      8: { bg: '#000000', fog: '#000000', env: 'night', skyOn: false, clouds: false, ambient: 0.08, dir: 0.38 },
+    };
+    return v[level];
+  }, [level]);
+
+  // =========================
+  // Actions
+  // =========================
+  const restartAll = useCallback(() => {
+    if (levelUpTimeoutRef.current) {
+      window.clearTimeout(levelUpTimeoutRef.current);
+      levelUpTimeoutRef.current = null;
+    }
+
     setHitsLeft(MAX_HITS);
     setStatus('playing');
     setResetSignal((s) => s + 1);
     setHasStarted(true);
-    setScore(0);
+
     setLevel(1);
+    setScore(0);
     setLevelCleared(false);
-    setNextLevel(1);
-  }, []);
+    setNextLevel(2);
+  }, [MAX_HITS]);
 
   const onHit = useCallback(() => {
     if (status !== 'playing') return;
-    if (levelCleared) return; // ✅ durante transición no pegues hits
 
     onHitFlash();
 
@@ -89,58 +176,62 @@ export function Scene() {
       if (next <= 0) setStatus('lost');
       return Math.max(0, next);
     });
-  }, [status, levelCleared, onHitFlash]);
+  }, [status, onHitFlash]);
 
-const onCollect = useCallback(() => {
-  if (levelCleared) return;
-  setScore((s) => Math.min(coinsTotal, s + 1));
-}, [levelCleared, coinsTotal]);
+  const onCollect = useCallback(() => {
+    if (levelCleared) return;
+    setScore((s) => Math.min(coinsTotal, s + 1));
+  }, [levelCleared, coinsTotal]);
 
-  // ✅ 1) Detectar “nivel completado” (no programes timeout acá)
+  // ✅ avanzar nivel al juntar todas las monedas
   useEffect(() => {
     if (!hasStarted) return;
     if (status !== 'playing') return;
     if (levelCleared) return;
     if (score < coinsTotal) return;
 
-    const to = (Math.min(level + 1, 3) as 1 | 2 | 3);
+    // si ya hay un timeout en curso, no reprogramar
+    if (levelUpTimeoutRef.current) return;
+
+    const to = (Math.min(level + 1, MAX_LEVEL) as Level);
+
     setNextLevel(to);
     setLevelCleared(true);
-  }, [hasStarted, status, levelCleared, score, coinsTotal, level]);
 
-  // ✅ 2) Cuando levelCleared = true, recién ahí programás el cambio de nivel
-  useEffect(() => {
-    if (!levelCleared) return;
-
-    if (levelTimerRef.current) window.clearTimeout(levelTimerRef.current);
-
-    levelTimerRef.current = window.setTimeout(() => {
-      setLevel(nextLevel);
+    levelUpTimeoutRef.current = window.setTimeout(() => {
+      setLevel(to);
       setScore(0);
       setHitsLeft(MAX_HITS);
       setStatus('playing');
       setResetSignal((s) => s + 1);
       setLevelCleared(false);
+
+      levelUpTimeoutRef.current = null;
     }, 1200);
-
+  }, [hasStarted, status, levelCleared, score, coinsTotal, level, MAX_HITS]);
+  useEffect(() => {
     return () => {
-      if (levelTimerRef.current) window.clearTimeout(levelTimerRef.current);
-      levelTimerRef.current = null;
+      if (levelUpTimeoutRef.current) {
+        window.clearTimeout(levelUpTimeoutRef.current);
+        levelUpTimeoutRef.current = null;
+      }
     };
-  }, [levelCleared, nextLevel]);
+  }, []);
 
-  // Enter start / restart (SIN reiniciar mientras jugás)
+
+  // Enter start / restart
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.code !== 'Enter') return;
 
-      if (!hasStarted) return restart();
-      if (status === 'lost') return restart();
+      if (!hasStarted) return restartAll();
+      if (status === 'lost') return restartAll();
+      if (status === 'won') return restartAll();
     };
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [hasStarted, restart, status]);
+  }, [hasStarted, status, restartAll]);
 
   return (
     <>
@@ -157,28 +248,21 @@ const onCollect = useCallback(() => {
           fontFamily: 'system-ui',
           userSelect: 'none',
           zIndex: 10,
-          minWidth: 220,
+          minWidth: 250,
         }}
       >
-        <div>
-          ❤️ Energía: <b>{hitsLeft}</b> / {MAX_HITS}
-        </div>
-        <div>
-          🎮 Estado: <b>{hasStarted ? status : 'intro'}</b>
-        </div>
-        <div style={{ marginTop: 6 }}>
-          🧭 Nivel: <b>{level}</b>
-        </div>
-        <div style={{ marginTop: 6 }}>
-          🪙 Monedas: <b>{score}</b> / {coinsTotal}
-        </div>
+        <div>❤️ Energía: <b>{hitsLeft}</b> / {MAX_HITS}</div>
+        <div>🎮 Estado: <b>{hasStarted ? status : 'intro'}</b></div>
+        <div style={{ marginTop: 6 }}>🧭 Nivel: <b>{level}</b> / 8</div>
+        <div style={{ marginTop: 6 }}>🪙 Monedas: <b>{score}</b> / {coinsTotal}</div>
         <div style={{ marginTop: 8, opacity: 0.85, fontSize: 12 }}>
-          C: Free look — Enter: {hasStarted ? 'Reiniciar (solo Game Over)' : 'Empezar'}
+          C: Free look — Enter:{' '}
+          {!hasStarted ? 'Empezar' : status === 'lost' ? 'Reiniciar' : status === 'won' ? 'Reiniciar' : '—'}
         </div>
       </div>
 
-      {/* Overlay Nivel completado */}
-      {levelCleared && (
+      {/* Nivel completado */}
+      {levelCleared && status === 'playing' && (
         <div
           style={{
             position: 'absolute',
@@ -199,7 +283,7 @@ const onCollect = useCallback(() => {
               padding: '18px 22px',
               borderRadius: 16,
               textAlign: 'center',
-              minWidth: 300,
+              minWidth: 340,
             }}
           >
             <div style={{ fontSize: 26, fontWeight: 900 }}>✅ NIVEL COMPLETADO</div>
@@ -210,7 +294,7 @@ const onCollect = useCallback(() => {
         </div>
       )}
 
-      {/* Overlay Start */}
+      {/* Start */}
       {!hasStarted && (
         <div
           style={{
@@ -239,13 +323,7 @@ const onCollect = useCallback(() => {
             </div>
             <div style={{ marginTop: 12, fontSize: 16, fontWeight: 700 }}>
               Presioná{' '}
-              <span
-                style={{
-                  padding: '2px 8px',
-                  borderRadius: 8,
-                  background: 'rgba(255,255,255,0.15)',
-                }}
-              >
+              <span style={{ padding: '2px 8px', borderRadius: 8, background: 'rgba(255,255,255,0.15)' }}>
                 Enter
               </span>{' '}
               para empezar
@@ -254,7 +332,7 @@ const onCollect = useCallback(() => {
         </div>
       )}
 
-      {/* Overlay GameOver */}
+      {/* Game Over */}
       {hasStarted && status === 'lost' && (
         <div
           style={{
@@ -275,12 +353,48 @@ const onCollect = useCallback(() => {
               padding: '22px 26px',
               borderRadius: 18,
               textAlign: 'center',
-              minWidth: 320,
+              minWidth: 340,
             }}
           >
             <div style={{ fontSize: 34, fontWeight: 900 }}>💥 GAME OVER</div>
             <div style={{ marginTop: 10, opacity: 0.9 }}>
-              Presioná <b>Enter</b> para reiniciar en la base
+              Presioná <b>Enter</b> para reiniciar
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WON */}
+      {hasStarted && status === 'won' && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'grid',
+            placeItems: 'center',
+            zIndex: 60,
+            pointerEvents: 'none',
+            fontFamily: 'system-ui',
+            color: 'white',
+            textShadow: '0 2px 12px rgba(0,0,0,0.7)',
+            background: 'rgba(0,0,0,0.55)',
+          }}
+        >
+          <div
+            style={{
+              background: 'rgba(0,0,0,0.7)',
+              padding: '22px 26px',
+              borderRadius: 18,
+              textAlign: 'center',
+              minWidth: 380,
+            }}
+          >
+            <div style={{ fontSize: 34, fontWeight: 950 }}>🏁 COMPLETADO</div>
+            <div style={{ marginTop: 10, opacity: 0.9 }}>
+              Terminaste el <b>Nivel 8</b> (boss).
+            </div>
+            <div style={{ marginTop: 12, opacity: 0.95 }}>
+              Presioná <b>Enter</b> para reiniciar todo
             </div>
           </div>
         </div>
@@ -300,28 +414,36 @@ const onCollect = useCallback(() => {
       )}
 
       <Canvas camera={{ position: [0, 3, 8], fov: 60 }} shadows>
-        <color attach="background" args={['#87ceeb']} />
-        <fog attach="fog" args={['#87ceeb', 25, 180]} />
+        <color attach="background" args={[visuals.bg]} />
+        <fog attach="fog" args={[visuals.fog, 25, 180]} />
 
         <Suspense fallback={<LoaderOverlay />}>
-          <CloudsDrei height={20} opacity={0.3} />
-          <CloudsDrei height={32} opacity={0.18} />
+          {visuals.clouds && (
+            <>
+              <CloudsDrei height={20} opacity={0.26} />
+              <CloudsDrei height={32} opacity={0.15} />
+            </>
+          )}
 
-          <Sky
-            distance={450000}
-            sunPosition={[1, 0.45, 0.2]}
-            inclination={0.45}
-            azimuth={0.25}
-            turbidity={8}
-            rayleigh={2}
-            mieCoefficient={0.006}
-            mieDirectionalG={0.8}
-          />
+          {visuals.skyOn && (
+            <Sky
+              distance={450000}
+              sunPosition={[1, 0.45, 0.2]}
+              inclination={0.45}
+              azimuth={0.25}
+              turbidity={8}
+              rayleigh={2}
+              mieCoefficient={0.006}
+              mieDirectionalG={0.8}
+            />
+          )}
 
-          <ambientLight intensity={0.35} />
+          <Moon level={level} />
+
+          <ambientLight intensity={visuals.ambient} />
           <directionalLight
             position={[10, 25, 10]}
-            intensity={1.2}
+            intensity={visuals.dir}
             castShadow
             shadow-mapSize-width={2048}
             shadow-mapSize-height={2048}
@@ -333,22 +455,41 @@ const onCollect = useCallback(() => {
             shadow-camera-bottom={-45}
           />
 
-          <Environment preset="sunset" />
+          <Environment preset={visuals.env} />
 
           <Physics gravity={[0, -9.81, 0]} timeStep="vary" maxCcdSubsteps={16}>
             <Ground />
             <SafePad />
 
-            <Pickups level={level} count={coinsTotal} runId={resetSignal} onCollect={onCollect} />
+            <Pickups
+              level={level}
+              count={coinsTotal}
+              runId={resetSignal} // importante para que regenere bien por nivel
+              onCollect={onCollect}
+            />
+
             <Obstacles level={level} onHit={onHit} />
+
+            {/* Boss solo en nivel 8 */}
+            {level === 8 && (
+              <BossDrone
+                runId={resetSignal}
+                targetRef={dronePosRef}
+                onHit={onHit}
+              />
+            )}
 
             <DroneRig
               freeLook={freeLook}
               onHit={onHit}
+              onHitFlash={onHitFlash}
               resetSignal={resetSignal}
               disabled={!hasStarted || status !== 'playing' || levelCleared}
-              windLevel={level}
-              freeze={levelCleared}
+              windLevel={level} // podés hacer: viento leve 2..7, fuerte 8
+              freeze={levelCleared || status === 'won'}
+              onPosition={(p) => {
+                dronePosRef.current.copy(p);
+              }}
             />
           </Physics>
 
