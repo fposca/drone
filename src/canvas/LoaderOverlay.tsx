@@ -12,13 +12,13 @@ export function LoaderOverlay() {
     <Html center>
       <div
         style={{
-          background: 'rgba(0,0,0,0.55)',
-          padding: '16px 18px',
+          background: 'rgba(0,0,0,0.95)',
+          padding: '26px 28px',
           borderRadius: 16,
           color: 'white',
           fontFamily: 'system-ui',
           textAlign: 'center',
-          minWidth: 260,
+          minWidth: 360,
           boxShadow: '0 12px 35px rgba(0,0,0,0.3)',
         }}
       >
@@ -28,7 +28,7 @@ export function LoaderOverlay() {
           {pct}%
         </div>
 
-        <div style={{ marginTop: 8, opacity: 0.85, fontSize: 12 }}>
+        <div style={{ marginTop: 8, opacity: 0.99, fontSize: 12 }}>
           {loaded} / {total}
         </div>
 
@@ -36,7 +36,7 @@ export function LoaderOverlay() {
           <div
             style={{
               marginTop: 8,
-              opacity: 0.75,
+              opacity: 0.95,
               fontSize: 11,
               maxWidth: 320,
               overflow: 'hidden',
@@ -54,7 +54,7 @@ export function LoaderOverlay() {
             marginTop: 12,
             height: 8,
             borderRadius: 999,
-            background: 'rgba(255,255,255,0.16)',
+            background: 'rgba(255,255,255,0.6)',
             overflow: 'hidden',
           }}
         >

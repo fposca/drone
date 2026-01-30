@@ -1,7 +1,7 @@
 import { Canvas } from '@react-three/fiber';
 import { Sky, Environment, OrbitControls, Preload } from '@react-three/drei';
 import { Physics } from '@react-three/rapier';
-import { Suspense, useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 
 import { LoaderOverlay } from './LoaderOverlay';
 import { DroneRig } from '../drone/DroneRig';
@@ -22,6 +22,16 @@ export function Scene() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Flash rojo (hit)
+  const [hitFlash, setHitFlash] = useState(false);
+  const hitFlashTimeout = useRef<number | null>(null);
+
+  const onHitFlash = useCallback(() => {
+    setHitFlash(true);
+    if (hitFlashTimeout.current) window.clearTimeout(hitFlashTimeout.current);
+    hitFlashTimeout.current = window.setTimeout(() => setHitFlash(false), 120);
+  }, []);
+
   // Game state
   const MAX_HITS = 5;
   const [hitsLeft, setHitsLeft] = useState(MAX_HITS);
@@ -37,14 +47,17 @@ export function Scene() {
   }, []);
 
   const onHit = useCallback(() => {
-    if (status !== 'playing') return;
+    // si no está jugando, no hace nada
+    if (!hasStarted || status !== 'playing') return;
+
+    onHitFlash();
 
     setHitsLeft((h) => {
       const next = h - 1;
       if (next <= 0) setStatus('lost');
       return Math.max(0, next);
     });
-  }, [status]);
+  }, [hasStarted, onHitFlash, status]);
 
   // Enter start/restart
   useEffect(() => {
@@ -61,6 +74,13 @@ export function Scene() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [hasStarted, restart, status]);
+
+  // cleanup timeout flash
+  useEffect(() => {
+    return () => {
+      if (hitFlashTimeout.current) window.clearTimeout(hitFlashTimeout.current);
+    };
+  }, []);
 
   return (
     <>
@@ -167,11 +187,23 @@ export function Scene() {
         </div>
       )}
 
+      {/* Flash rojo */}
+      {hitFlash && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(255,0,0,0.18)',
+            zIndex: 50,
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+
       <Canvas camera={{ position: [0, 3, 8], fov: 60 }} shadows>
         <color attach="background" args={['#87ceeb']} />
         <fog attach="fog" args={['#87ceeb', 25, 180]} />
 
-        {/* Loader real */}
         <Suspense fallback={<LoaderOverlay />}>
           <CloudsDrei height={20} opacity={0.3} />
           <CloudsDrei height={32} opacity={0.18} />
@@ -207,10 +239,13 @@ export function Scene() {
           <Physics gravity={[0, -9.81, 0]} timeStep="vary" maxCcdSubsteps={16}>
             <Ground />
             <SafePad />
-            <Obstacles />
+
+            {/* ✅ Obstacles también dispara daño + flash */}
+            <Obstacles onHit={onHit} />
+
             <DroneRig
               freeLook={freeLook}
-              onHit={onHit}
+              onHit={onHit}          // peligro ground, etc
               resetSignal={resetSignal}
               disabled={!hasStarted || status !== 'playing'}
             />

@@ -7,14 +7,20 @@ import { useKeyboardInput } from '../input/useKeyboardInput';
 import { DroneModel } from './DroneModel';
 
 type DroneRigProps = {
-   freeLook?: boolean;
+  freeLook?: boolean;
   onHit?: () => void;
+  onHitFlash?: () => void; // ✅ nuevo (para pantalla roja)
   resetSignal?: number;
-  disabled?: boolean;    // ✅ nuevo
+  disabled?: boolean;
 };
 
-export function DroneRig({ freeLook = false, onHit, resetSignal = 0, disabled = false }: DroneRigProps) {
-
+export function DroneRig({
+  freeLook = false,
+  onHit,
+  onHitFlash,
+  resetSignal = 0,
+  disabled = false,
+}: DroneRigProps) {
   const rbRef = useRef<RapierRigidBody | null>(null);
   const keys = useKeyboardInput();
 
@@ -25,37 +31,45 @@ export function DroneRig({ freeLook = false, onHit, resetSignal = 0, disabled = 
   const camTarget = useRef(new THREE.Vector3());
   const lastResetSeen = useRef(resetSignal);
 
-  // ✅ cooldown para que no reste 5 vidas de una
+  // cooldown hits
   const lastHitRef = useRef(0);
-  const HIT_COOLDOWN = 0.6; // segundos
+  const HIT_COOLDOWN = 0.6;
 
   const setRigidBody = useCallback((rb: RapierRigidBody | null) => {
     rbRef.current = rb;
   }, []);
 
- useFrame(() => {
-  const rb = rbRef.current;
-  if (!rb) return;
+  // ===== Auto-level helpers =====
+  const q = useRef(new THREE.Quaternion());
+  const qTarget = useRef(new THREE.Quaternion());
+  const upWorld = useRef(new THREE.Vector3(0, 1, 0));
+  const upBody = useRef(new THREE.Vector3());
+  const axis = useRef(new THREE.Vector3());
 
-  if (lastResetSeen.current !== resetSignal) {
-    lastResetSeen.current = resetSignal;
+  useFrame((_, dt) => {
+    const rb = rbRef.current;
+    if (!rb) return;
 
-    rb.setTranslation({ x: 0, y: 2, z: 0 }, true);
-    rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    rb.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    // ===== RESET =====
+    if (lastResetSeen.current !== resetSignal) {
+      lastResetSeen.current = resetSignal;
+
+      rb.setTranslation({ x: 0, y: 2, z: 0 }, true);
+      rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      rb.setAngvel({ x: 0, y: 0, z: 0 }, true);
       rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
-  }
+    }
 
-  // si el juego está en Game Over, no aplicar controles
-  if (disabled) return;
+    // si está disabled (game over / intro), no aplicar controles ni auto-level
+    if (disabled) return;
 
-  const pos = rb.translation();
+    const pos = rb.translation();
 
     // =========================
-    // Ground clamp (no atraviesa)
+    // Ground clamp
     // =========================
     const GROUND_Y = 0;
-    const DRONE_HALF_HEIGHT = 0.20;
+    const DRONE_HALF_HEIGHT = 0.2;
     const GROUND_EPS = 0.01;
     const minY = GROUND_Y + DRONE_HALF_HEIGHT + GROUND_EPS;
 
@@ -66,11 +80,55 @@ export function DroneRig({ freeLook = false, onHit, resetSignal = 0, disabled = 
       if (vNow.y < 0) rb.setLinvel({ x: vNow.x, y: 0, z: vNow.z }, true);
     }
 
-    const v = rb.linvel();
+    // =========================
+    // AUTO-LEVEL (endereza suave)
+    // - mantiene yaw (giro sobre Y)
+    // - corrige pitch/roll
+    // =========================
+    if (!freeLook) {
+      const rot = rb.rotation(); // {x,y,z,w}
+      q.current.set(rot.x, rot.y, rot.z, rot.w);
+
+      // up del drone en mundo
+      upBody.current.set(0, 1, 0).applyQuaternion(q.current).normalize();
+
+      // cuánto está inclinado (ángulo entre up del drone y up mundo)
+      const angle = Math.acos(
+        THREE.MathUtils.clamp(upBody.current.dot(upWorld.current), -1, 1)
+      );
+
+      // si está inclinado, armamos una corrección sobre el eje perpendicular
+      if (angle > 0.0001) {
+        axis.current.crossVectors(upBody.current, upWorld.current).normalize();
+
+        // fuerza de auto-level (ajustá)
+        const LEVEL_STRENGTH = 6.5; // más alto = endereza más rápido
+        const t = 1 - Math.exp(-LEVEL_STRENGTH * dt); // smoothing estable por dt
+
+        // rotación de corrección parcial
+        qTarget.current.setFromAxisAngle(axis.current, angle * t);
+
+        // aplicamos: qNew = qCorrection * q
+        qTarget.current.multiply(q.current);
+
+        rb.setRotation(
+          { x: qTarget.current.x, y: qTarget.current.y, z: qTarget.current.z, w: qTarget.current.w },
+          true
+        );
+
+        // opcional: amortiguar rotación angular para que no “siga girando”
+        const av = rb.angvel();
+        const DAMP = 0.92; // 0.9–0.98
+        rb.setAngvel({ x: av.x * DAMP, y: av.y, z: av.z * DAMP }, true);
+      }
+    }
 
     // =========================
-    // Control vertical tipo DJI (R/F)
+    // Movimiento
     // =========================
+    const v = rb.linvel();
+
+    // vertical
     const up = keys.throttleUp;
     const down = keys.throttleDown;
 
@@ -85,9 +143,7 @@ export function DroneRig({ freeLook = false, onHit, resetSignal = 0, disabled = 
 
     const ay = (vyTarget - v.y) * ACCEL;
 
-    // =========================
-    // Avance lateral WASD
-    // =========================
+    // horizontal
     const ix = (keys.right ? 1 : 0) + (keys.left ? -1 : 0);
     const iz = (keys.back ? 1 : 0) + (keys.forward ? -1 : 0);
 
@@ -103,6 +159,7 @@ export function DroneRig({ freeLook = false, onHit, resetSignal = 0, disabled = 
     const m = rb.mass();
     rb.addForce({ x: m * ax, y: m * ay, z: m * az }, true);
 
+    // clamp
     const v2 = rb.linvel();
     rb.setLinvel(
       {
@@ -113,9 +170,7 @@ export function DroneRig({ freeLook = false, onHit, resetSignal = 0, disabled = 
       true
     );
 
-    // =========================
-    // Cámara follow
-    // =========================
+    // cámara follow
     if (!freeLook) {
       camPos.current.set(pos.x, pos.y, pos.z).add(camOffset.current);
       camera.position.lerp(camPos.current, 0.12);
@@ -137,13 +192,13 @@ export function DroneRig({ freeLook = false, onHit, resetSignal = 0, disabled = 
       onCollisionEnter={(e) => {
         const otherType = (e.other.rigidBodyObject?.userData as any)?.type;
 
-        // ✅ por ahora: si toca el piso peligroso o un obstáculo, resta vida
         if (otherType === 'danger-ground' || otherType === 'obstacle') {
           const now = performance.now() / 1000;
           if (now - lastHitRef.current < HIT_COOLDOWN) return;
           lastHitRef.current = now;
 
           onHit?.();
+          onHitFlash?.(); // ✅ pantalla roja
         }
       }}
     >
