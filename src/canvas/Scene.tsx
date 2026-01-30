@@ -1,7 +1,7 @@
 import { Canvas } from '@react-three/fiber';
 import { Sky, Environment, OrbitControls, Preload } from '@react-three/drei';
 import { Physics } from '@react-three/rapier';
-import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { LoaderOverlay } from './LoaderOverlay';
 import { DroneRig } from '../drone/DroneRig';
@@ -9,9 +9,12 @@ import { Ground } from './Ground';
 import { CloudsDrei } from './CloudsDrei';
 import { SafePad } from './SafePad';
 import { Obstacles } from './Obstacles';
+import { Pickups } from './Pickups';
 
 export function Scene() {
+  // =========================
   // Cámara free look
+  // =========================
   const [freeLook, setFreeLook] = useState(false);
 
   useEffect(() => {
@@ -22,7 +25,9 @@ export function Scene() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // =========================
   // Flash rojo (hit)
+  // =========================
   const [hitFlash, setHitFlash] = useState(false);
   const hitFlashTimeout = useRef<number | null>(null);
 
@@ -32,23 +37,50 @@ export function Scene() {
     hitFlashTimeout.current = window.setTimeout(() => setHitFlash(false), 120);
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (hitFlashTimeout.current) window.clearTimeout(hitFlashTimeout.current);
+    };
+  }, []);
+
+  // =========================
   // Game state
+  // =========================
   const MAX_HITS = 5;
   const [hitsLeft, setHitsLeft] = useState(MAX_HITS);
   const [status, setStatus] = useState<'playing' | 'won' | 'lost'>('playing');
   const [resetSignal, setResetSignal] = useState(0);
   const [hasStarted, setHasStarted] = useState(false);
 
+  const [level, setLevel] = useState<1 | 2 | 3>(1);
+  const [score, setScore] = useState(0);
+
+  // monedas por nivel
+  const COINS_PER_LEVEL = useMemo<Record<1 | 2 | 3, number>>(
+    () => ({ 1: 2, 2: 10, 3: 14 }),
+    []
+  );
+  const coinsTotal = COINS_PER_LEVEL[level];
+
+  // transición de nivel
+  const [levelCleared, setLevelCleared] = useState(false);
+  const [nextLevel, setNextLevel] = useState<1 | 2 | 3>(1);
+  const levelTimerRef = useRef<number | null>(null);
+
   const restart = useCallback(() => {
     setHitsLeft(MAX_HITS);
     setStatus('playing');
     setResetSignal((s) => s + 1);
     setHasStarted(true);
+    setScore(0);
+    setLevel(1);
+    setLevelCleared(false);
+    setNextLevel(1);
   }, []);
 
   const onHit = useCallback(() => {
-    // si no está jugando, no hace nada
-    if (!hasStarted || status !== 'playing') return;
+    if (status !== 'playing') return;
+    if (levelCleared) return; // ✅ durante transición no pegues hits
 
     onHitFlash();
 
@@ -57,30 +89,58 @@ export function Scene() {
       if (next <= 0) setStatus('lost');
       return Math.max(0, next);
     });
-  }, [hasStarted, onHitFlash, status]);
+  }, [status, levelCleared, onHitFlash]);
 
-  // Enter start/restart
+const onCollect = useCallback(() => {
+  if (levelCleared) return;
+  setScore((s) => Math.min(coinsTotal, s + 1));
+}, [levelCleared, coinsTotal]);
+
+  // ✅ 1) Detectar “nivel completado” (no programes timeout acá)
+  useEffect(() => {
+    if (!hasStarted) return;
+    if (status !== 'playing') return;
+    if (levelCleared) return;
+    if (score < coinsTotal) return;
+
+    const to = (Math.min(level + 1, 3) as 1 | 2 | 3);
+    setNextLevel(to);
+    setLevelCleared(true);
+  }, [hasStarted, status, levelCleared, score, coinsTotal, level]);
+
+  // ✅ 2) Cuando levelCleared = true, recién ahí programás el cambio de nivel
+  useEffect(() => {
+    if (!levelCleared) return;
+
+    if (levelTimerRef.current) window.clearTimeout(levelTimerRef.current);
+
+    levelTimerRef.current = window.setTimeout(() => {
+      setLevel(nextLevel);
+      setScore(0);
+      setHitsLeft(MAX_HITS);
+      setStatus('playing');
+      setResetSignal((s) => s + 1);
+      setLevelCleared(false);
+    }, 1200);
+
+    return () => {
+      if (levelTimerRef.current) window.clearTimeout(levelTimerRef.current);
+      levelTimerRef.current = null;
+    };
+  }, [levelCleared, nextLevel]);
+
+  // Enter start / restart (SIN reiniciar mientras jugás)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.code !== 'Enter') return;
 
       if (!hasStarted) return restart();
       if (status === 'lost') return restart();
-
-      // opcional: reiniciar mientras jugás
-      if (status === 'playing') return restart();
     };
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [hasStarted, restart, status]);
-
-  // cleanup timeout flash
-  useEffect(() => {
-    return () => {
-      if (hitFlashTimeout.current) window.clearTimeout(hitFlashTimeout.current);
-    };
-  }, []);
 
   return (
     <>
@@ -106,10 +166,49 @@ export function Scene() {
         <div>
           🎮 Estado: <b>{hasStarted ? status : 'intro'}</b>
         </div>
+        <div style={{ marginTop: 6 }}>
+          🧭 Nivel: <b>{level}</b>
+        </div>
+        <div style={{ marginTop: 6 }}>
+          🪙 Monedas: <b>{score}</b> / {coinsTotal}
+        </div>
         <div style={{ marginTop: 8, opacity: 0.85, fontSize: 12 }}>
-          C: Free look — Enter: {hasStarted ? 'Reiniciar' : 'Empezar'}
+          C: Free look — Enter: {hasStarted ? 'Reiniciar (solo Game Over)' : 'Empezar'}
         </div>
       </div>
+
+      {/* Overlay Nivel completado */}
+      {levelCleared && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'grid',
+            placeItems: 'center',
+            zIndex: 40,
+            pointerEvents: 'none',
+            fontFamily: 'system-ui',
+            color: 'white',
+            textShadow: '0 2px 12px rgba(0,0,0,0.6)',
+            background: 'rgba(0,0,0,0.35)',
+          }}
+        >
+          <div
+            style={{
+              background: 'rgba(0,0,0,0.55)',
+              padding: '18px 22px',
+              borderRadius: 16,
+              textAlign: 'center',
+              minWidth: 300,
+            }}
+          >
+            <div style={{ fontSize: 26, fontWeight: 900 }}>✅ NIVEL COMPLETADO</div>
+            <div style={{ marginTop: 10, opacity: 0.9, fontSize: 14 }}>
+              Preparando <b>Nivel {nextLevel}</b>…
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Overlay Start */}
       {!hasStarted && (
@@ -240,14 +339,16 @@ export function Scene() {
             <Ground />
             <SafePad />
 
-            {/* ✅ Obstacles también dispara daño + flash */}
-            <Obstacles onHit={onHit} />
+            <Pickups level={level} count={coinsTotal} runId={resetSignal} onCollect={onCollect} />
+            <Obstacles level={level} onHit={onHit} />
 
             <DroneRig
               freeLook={freeLook}
-              onHit={onHit}          // peligro ground, etc
+              onHit={onHit}
               resetSignal={resetSignal}
-              disabled={!hasStarted || status !== 'playing'}
+              disabled={!hasStarted || status !== 'playing' || levelCleared}
+              windLevel={level}
+              freeze={levelCleared}
             />
           </Physics>
 

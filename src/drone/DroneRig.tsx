@@ -12,6 +12,8 @@ type DroneRigProps = {
   onHitFlash?: () => void; // ✅ nuevo (para pantalla roja)
   resetSignal?: number;
   disabled?: boolean;
+  windLevel?: number; // ✅ por si querés agregar viento
+  freeze?: boolean; // ✅ nuevo (para congelar el drone)
 };
 
 export function DroneRig({
@@ -20,6 +22,10 @@ export function DroneRig({
   onHitFlash,
   resetSignal = 0,
   disabled = false,
+  windLevel = 1,
+  freeze = false,
+
+
 }: DroneRigProps) {
   const rbRef = useRef<RapierRigidBody | null>(null);
   const keys = useKeyboardInput();
@@ -58,8 +64,20 @@ export function DroneRig({
       rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
       rb.setAngvel({ x: 0, y: 0, z: 0 }, true);
       rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+
     }
 
+     // ✅ CONGELADO durante "Nivel completado"
+  if (freeze) {
+    // importantísimo: matar toda inercia
+    rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    rb.setAngvel({ x: 0, y: 0, z: 0 }, true);
+
+    // opcional: mantenerlo en la base mientras se muestra el cartel
+    rb.setTranslation({ x: 0, y: 2, z: 0 }, true);
+    rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+    return;
+  }
     // si está disabled (game over / intro), no aplicar controles ni auto-level
     if (disabled) return;
 
@@ -158,17 +176,37 @@ export function DroneRig({
 
     const m = rb.mass();
     rb.addForce({ x: m * ax, y: m * ay, z: m * az }, true);
+    // =========================
+    // Viento (nivel 2+)
+    // =========================
+    const t = performance.now() / 1000;
 
-    // clamp
-    const v2 = rb.linvel();
-    rb.setLinvel(
-      {
-        x: Math.max(-5, Math.min(5, v2.x)),
-        y: Math.max(-4, Math.min(4, v2.y)),
-        z: Math.max(-5, Math.min(5, v2.z)),
-      },
-      true
-    );
+let windStrength = 0;
+if (windLevel === 2) windStrength = 0.22;  // ✅ MUCHO más bajo
+if (windLevel >= 3) windStrength = 0.38;
+
+// ráfagas suaves
+const gust = 0.6 + 0.4 * Math.sin(t * 0.25);
+const windX = Math.sin(t * 0.35) * windStrength * gust;
+const windZ = Math.cos(t * 0.28) * windStrength * 0.55 * gust;
+
+if (windStrength > 0) {
+  rb.addForce({ x: windX, y: 0, z: windZ }, true);
+
+  // ✅ clamp extra para que no te arrastre infinito
+  const vNow = rb.linvel();
+  const maxWindSpeed = windLevel === 2 ? 3.2 : 3.8;
+
+  rb.setLinvel(
+    {
+      x: THREE.MathUtils.clamp(vNow.x, -maxWindSpeed, maxWindSpeed),
+      y: vNow.y,
+      z: THREE.MathUtils.clamp(vNow.z, -maxWindSpeed, maxWindSpeed),
+    },
+    true
+  );
+}
+
 
     // cámara follow
     if (!freeLook) {
