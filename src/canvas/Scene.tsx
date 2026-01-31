@@ -80,7 +80,7 @@ export function Scene() {
     if (hitFlashTimeout.current) window.clearTimeout(hitFlashTimeout.current);
     hitFlashTimeout.current = window.setTimeout(() => setHitFlash(false), 140);
   }, []);
-
+  const [assistMode, setAssistMode] = useState(true); // arrancá en asistido si querés
 
   useEffect(() => {
     return () => {
@@ -217,7 +217,13 @@ export function Scene() {
       }
     };
   }, []);
-
+useEffect(() => {
+  const onKey = (e: KeyboardEvent) => {
+    if (e.code === 'KeyV') setAssistMode(v => !v); // V cambia modo
+  };
+  window.addEventListener('keydown', onKey);
+  return () => window.removeEventListener('keydown', onKey);
+}, []);
 
   // Enter start / restart
   useEffect(() => {
@@ -255,8 +261,12 @@ export function Scene() {
         <div>🎮 Estado: <b>{hasStarted ? status : 'intro'}</b></div>
         <div style={{ marginTop: 6 }}>🧭 Nivel: <b>{level}</b> / 8</div>
         <div style={{ marginTop: 6 }}>🪙 Monedas: <b>{score}</b> / {coinsTotal}</div>
+        <div style={{ marginTop: 6 }}>
+  🧠 Control: <b>{assistMode ? 'Asistido (cámara)' : 'Real (drone)'}</b>
+</div>
+
         <div style={{ marginTop: 8, opacity: 0.85, fontSize: 12 }}>
-          C: Free look — Enter:{' '}
+          C: Free look — V: Cambiar control  Enter:{' '}
           {!hasStarted ? 'Empezar' : status === 'lost' ? 'Reiniciar' : status === 'won' ? 'Reiniciar' : '—'}
         </div>
       </div>
@@ -487,6 +497,7 @@ export function Scene() {
               disabled={!hasStarted || status !== 'playing' || levelCleared}
               windLevel={level} // podés hacer: viento leve 2..7, fuerte 8
               freeze={levelCleared || status === 'won'}
+              assistMode={assistMode}
               onPosition={(p) => {
                 dronePosRef.current.copy(p);
               }}

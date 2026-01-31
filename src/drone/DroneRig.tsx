@@ -16,6 +16,7 @@ type DroneRigProps = {
   freeze?: boolean;
   onPosition?: (p: THREE.Vector3) => void;
   enabledRotations?: [boolean, boolean, boolean]; // [x,y,z]
+  assistMode?: boolean;
 };
 
 export function DroneRig({
@@ -28,6 +29,7 @@ export function DroneRig({
   freeze = false,
   onPosition,
   enabledRotations = [false, true, false],
+   assistMode = false,
 }: DroneRigProps) {
   const rbRef = useRef<RapierRigidBody | null>(null);
 
@@ -204,31 +206,53 @@ export function DroneRig({
       qNow.current.set(rot.x, rot.y, rot.z, rot.w);
     }
 
-    // right/forward del drone en mundo
-    right.current.set(1, 0, 0).applyQuaternion(qNow.current).normalize();
-    forward.current.set(0, 0, -1).applyQuaternion(qNow.current).normalize(); // forward = -Z
+  // ===== referencia de movimiento: DRONE (real) o CÁMARA (asistido) =====
+const mx = input.moveX ?? 0; // -1..1
+const mz = input.moveZ ?? 0; // -1..1  (en tu hook: adelante = -1)
 
-    const mx = input.moveX ?? 0;
-    const mz = input.moveZ ?? 0;
+// Queremos que "adelante" sea consistente:
+// si tu input.moveZ es -1 al apretar adelante, entonces forwardScale = -mz
+const forwardScale = -mz;
 
-    // move en base a input local
-    // OJO: tu hook pone ArrowUp => moveZ = -1
-    // entonces para avanzar "forward", usamos -mz
-    if (Math.abs(mx) + Math.abs(mz) < 0.001) {
-      move.current.set(0, 0, 0);
-    } else {
-      move.current
-        .set(0, 0, 0)
-        .addScaledVector(right.current, mx)
-        .addScaledVector(forward.current, -mz) // ✅ esta es la clave
-        .normalize();
-    }
+if (assistMode) {
+  // --- Asistido: según cámara ---
+  // forward de cámara proyectado en el piso (XZ)
+  forward.current.set(0, 0, -1).applyQuaternion(camera.quaternion);
+  forward.current.y = 0;
+  forward.current.normalize();
 
-    const vxTarget = move.current.x * MAX_H_SPEED;
-    const vzTarget = move.current.z * MAX_H_SPEED;
+  // right = perpendicular
+  right.current.crossVectors(forward.current, upWorld.current).normalize();
 
-    const ax = (vxTarget - v.x) * ACCEL_H;
-    const az = (vzTarget - v.z) * ACCEL_H;
+
+} else {
+  // --- Real: según drone ---
+  const rot = rb.rotation();
+  qNow.current.set(rot.x, rot.y, rot.z, rot.w);
+
+  forward.current.set(0, 0, -1).applyQuaternion(qNow.current).normalize();
+  right.current.set(1, 0, 0).applyQuaternion(qNow.current).normalize();
+}
+
+// armado del vector deseado
+// armado del vector deseado
+move.current
+  .copy(right.current).multiplyScalar(mx)
+  .addScaledVector(forward.current, forwardScale);
+
+// si no hay input, no normalices (evita NaN/temblores)
+if (Math.abs(mx) + Math.abs(mz) < 0.001) {
+  move.current.set(0, 0, 0);
+} else {
+  move.current.normalize();
+}
+
+const vxTarget = move.current.x * MAX_H_SPEED;
+const vzTarget = move.current.z * MAX_H_SPEED;
+
+const ax = (vxTarget - v.x) * ACCEL_H;
+const az = (vzTarget - v.z) * ACCEL_H;
+
 
     const m = rb.mass();
     force.current.set(m * ax, m * ay, m * az);
@@ -263,17 +287,25 @@ export function DroneRig({
       );
     }
 
-    // =========================
-    // Cámara follow (rota con yaw)
-    // =========================
-    if (!freeLook) {
-      const offset = camOffset.current.clone().applyQuaternion(qNow.current);
-      camPos.current.set(pos.x, pos.y, pos.z).add(offset);
-      camera.position.lerp(camPos.current, 0.12);
+ // =========================
+// Cámara follow
+// - assistMode: cámara "detrás del dron" (rota con el dron) => controles se sienten "normales" para aprender
+// - realMode: cámara NO rota con el dron => si el dron gira 180°, se siente invertido respecto a cámara (como querés)
+// =========================
+if (!freeLook) {
+  if (assistMode) {
+    // cámara detrás del dron (rota con el yaw del dron)
+    const offset = camOffset.current.clone().applyQuaternion(qNow.current);
+    camPos.current.set(pos.x, pos.y, pos.z).add(offset);
+  } else {
+    // REAL: cámara en offset de mundo (NO rota con el dron)
+    camPos.current.set(pos.x, pos.y, pos.z).add(camOffset.current);
+  }
 
-      camTarget.current.set(pos.x, pos.y, pos.z);
-      camera.lookAt(camTarget.current);
-    }
+  camera.position.lerp(camPos.current, 0.12);
+  camTarget.current.set(pos.x, pos.y, pos.z);
+  camera.lookAt(camTarget.current);
+}
   });
 
   return (
