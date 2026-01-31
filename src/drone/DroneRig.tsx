@@ -15,6 +15,7 @@ type DroneRigProps = {
   windLevel?: number;
   freeze?: boolean;
   onPosition?: (p: THREE.Vector3) => void;
+  enabledRotations?: [boolean, boolean, boolean]; // [x,y,z]
 };
 
 export function DroneRig({
@@ -26,17 +27,20 @@ export function DroneRig({
   windLevel = 1,
   freeze = false,
   onPosition,
+  enabledRotations = [false, true, false],
 }: DroneRigProps) {
   const rbRef = useRef<RapierRigidBody | null>(null);
 
-  // ✅ Nuevo input unificado teclado+joystick
+  // ✅ input unificado (teclado + joystick)
   const input = usePlayerInput();
 
-  // Cámara follow
   const { camera } = useThree();
+
+  // cámara (offset detrás/arriba) — se rota con el yaw del drone
   const camOffset = useRef(new THREE.Vector3(0, 2, 6));
   const camPos = useRef(new THREE.Vector3());
   const camTarget = useRef(new THREE.Vector3());
+
   const lastResetSeen = useRef(resetSignal);
 
   // cooldown hits
@@ -47,34 +51,40 @@ export function DroneRig({
     rbRef.current = rb;
   }, []);
 
-  // Auto-level helpers
-  const q = useRef(new THREE.Quaternion());
-  const qTarget = useRef(new THREE.Quaternion());
-  const upWorld = useRef(new THREE.Vector3(0, 1, 0));
-  const upBody = useRef(new THREE.Vector3());
-  const axis = useRef(new THREE.Vector3());
-
+  // ===== Refs para evitar allocs =====
   const tmpPos = useRef(new THREE.Vector3());
 
+  const qNow = useRef(new THREE.Quaternion());
+  const qYaw = useRef(new THREE.Quaternion());
+  const qCorr = useRef(new THREE.Quaternion());
+
+  const forward = useRef(new THREE.Vector3());
+  const right = useRef(new THREE.Vector3());
+  const move = useRef(new THREE.Vector3());
+  const axis = useRef(new THREE.Vector3());
+  const upBody = useRef(new THREE.Vector3());
+  const upWorld = useRef(new THREE.Vector3(0, 1, 0));
+
+  const force = useRef(new THREE.Vector3());
+
   useFrame((_, dt) => {
-    // ✅ refrescar input (teclado + joystick)
+    // si tu hook requiere "poll" por frame
     const readRef = (input as any).__read as React.MutableRefObject<() => void> | undefined;
     readRef?.current?.();
 
     const rb = rbRef.current;
     if (!rb) return;
 
-    // RESET
+    // ===== RESET =====
     if (lastResetSeen.current !== resetSignal) {
       lastResetSeen.current = resetSignal;
-
       rb.setTranslation({ x: 0, y: 2, z: 0 }, true);
       rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
       rb.setAngvel({ x: 0, y: 0, z: 0 }, true);
       rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
     }
 
-    // FREEZE (nivel completado)
+    // ===== FREEZE (nivel completado) =====
     if (freeze) {
       rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
       rb.setAngvel({ x: 0, y: 0, z: 0 }, true);
@@ -87,13 +97,15 @@ export function DroneRig({
 
     const pos = rb.translation();
 
-    // reportar posición
+    // ✅ reportar posición al Scene (sin alloc por frame)
     if (onPosition) {
       tmpPos.current.set(pos.x, pos.y, pos.z);
       onPosition(tmpPos.current);
     }
 
+    // =========================
     // Ground clamp
+    // =========================
     const GROUND_Y = 0;
     const DRONE_HALF_HEIGHT = 0.2;
     const GROUND_EPS = 0.01;
@@ -101,17 +113,41 @@ export function DroneRig({
 
     if (pos.y <= minY) {
       rb.setTranslation({ x: pos.x, y: minY, z: pos.z }, true);
-
       const vNow = rb.linvel();
       if (vNow.y < 0) rb.setLinvel({ x: vNow.x, y: 0, z: vNow.z }, true);
     }
 
-    // AUTO-LEVEL
+    // =========================
+    // YAW (giro sobre Y)
+    // =========================
+    // input.yaw: -1..1 (izq..der)
+    const yaw = Math.abs((input as any).yaw ?? 0) > 0.06 ? ((input as any).yaw ?? 0) : 0;
+
+    if (yaw !== 0) {
+      const rot = rb.rotation();
+      qNow.current.set(rot.x, rot.y, rot.z, rot.w);
+
+      const YAW_SPEED = 2.3; // rad/seg
+      qYaw.current.setFromAxisAngle(upWorld.current, yaw * YAW_SPEED * dt);
+
+      // qNew = qYaw * qNow
+      qYaw.current.multiply(qNow.current);
+
+      rb.setRotation(
+        { x: qYaw.current.x, y: qYaw.current.y, z: qYaw.current.z, w: qYaw.current.w },
+        true
+      );
+    }
+
+    // =========================
+    // AUTO-LEVEL (endereza pitch/roll) - SIN allocs
+    // =========================
     if (!freeLook) {
       const rot = rb.rotation();
-      q.current.set(rot.x, rot.y, rot.z, rot.w);
+      qNow.current.set(rot.x, rot.y, rot.z, rot.w);
 
-      upBody.current.set(0, 1, 0).applyQuaternion(q.current).normalize();
+      // up del drone en mundo
+      upBody.current.set(0, 1, 0).applyQuaternion(qNow.current).normalize();
 
       const angle = Math.acos(
         THREE.MathUtils.clamp(upBody.current.dot(upWorld.current), -1, 1)
@@ -123,67 +159,99 @@ export function DroneRig({
         const LEVEL_STRENGTH = 6.5;
         const t = 1 - Math.exp(-LEVEL_STRENGTH * dt);
 
-        qTarget.current.setFromAxisAngle(axis.current, angle * t);
-        qTarget.current.multiply(q.current);
+        qCorr.current.setFromAxisAngle(axis.current, angle * t);
+        qCorr.current.multiply(qNow.current);
 
         rb.setRotation(
-          { x: qTarget.current.x, y: qTarget.current.y, z: qTarget.current.z, w: qTarget.current.w },
+          { x: qCorr.current.x, y: qCorr.current.y, z: qCorr.current.z, w: qCorr.current.w },
           true
         );
 
+        // amortiguar rotación angular en X/Z
         const av = rb.angvel();
         const DAMP = 0.92;
         rb.setAngvel({ x: av.x * DAMP, y: av.y, z: av.z * DAMP }, true);
       }
     }
 
-    // MOVIMIENTO (ahora analógico)
+    // =========================
+    // Movimiento (en ejes LOCALES)
+    // ✅ ACÁ VA el bloque que preguntaste
+    // =========================
     const v = rb.linvel();
 
-    // lift: input.lift => +1 subir, -1 bajar
+    // vertical
     const MAX_UP = 3.2;
     const MAX_DOWN = -2.6;
-    const ACCEL = 3.5;
+    const ACCEL_Y = 3.5;
+
+    const lift = input.lift ?? 0;
 
     let vyTarget = 0;
-    if (input.lift > 0.05) vyTarget = MAX_UP * input.lift;
-    if (input.lift < -0.05) vyTarget = MAX_DOWN * (-input.lift);
+    if (lift > 0.05) vyTarget = MAX_UP * lift;
+    if (lift < -0.05) vyTarget = MAX_DOWN * (-lift);
+    if (lift < -0.05 && pos.y <= minY + 0.001) vyTarget = 0;
 
-    if (input.lift < -0.05 && pos.y <= minY + 0.001) vyTarget = 0;
+    const ay = (vyTarget - v.y) * ACCEL_Y;
 
-    const ay = (vyTarget - v.y) * ACCEL;
-
-    // horizontal: moveX/moveZ
+    // horizontal
     const MAX_H_SPEED = input.boost ? 4.2 : 3.0;
-    const H_ACCEL = 2.2;
+    const ACCEL_H = 2.2;
 
-    const vxTarget = input.moveX * MAX_H_SPEED;
+    // orientación actual
+    {
+      const rot = rb.rotation();
+      qNow.current.set(rot.x, rot.y, rot.z, rot.w);
+    }
 
-    // ojo: moveZ (adelante=-1) => queremos vz negativo para ir “adelante”
-    const vzTarget = input.moveZ * MAX_H_SPEED;
+    // right/forward del drone en mundo
+    right.current.set(1, 0, 0).applyQuaternion(qNow.current).normalize();
+    forward.current.set(0, 0, -1).applyQuaternion(qNow.current).normalize(); // forward = -Z
 
-    const ax = (vxTarget - v.x) * H_ACCEL;
-    const az = (vzTarget - v.z) * H_ACCEL;
+    const mx = input.moveX ?? 0;
+    const mz = input.moveZ ?? 0;
+
+    // move en base a input local
+    // OJO: tu hook pone ArrowUp => moveZ = -1
+    // entonces para avanzar "forward", usamos -mz
+    if (Math.abs(mx) + Math.abs(mz) < 0.001) {
+      move.current.set(0, 0, 0);
+    } else {
+      move.current
+        .set(0, 0, 0)
+        .addScaledVector(right.current, mx)
+        .addScaledVector(forward.current, -mz) // ✅ esta es la clave
+        .normalize();
+    }
+
+    const vxTarget = move.current.x * MAX_H_SPEED;
+    const vzTarget = move.current.z * MAX_H_SPEED;
+
+    const ax = (vxTarget - v.x) * ACCEL_H;
+    const az = (vzTarget - v.z) * ACCEL_H;
 
     const m = rb.mass();
-    rb.addForce({ x: m * ax, y: m * ay, z: m * az }, true);
+    force.current.set(m * ax, m * ay, m * az);
+    rb.addForce({ x: force.current.x, y: force.current.y, z: force.current.z }, true);
 
-    // VIENTO
+    // =========================
+    // Viento (capado)
+    // =========================
     const tNow = performance.now() / 1000;
 
     let windStrength = 0;
-    if (windLevel === 2) windStrength = 0.22;
-    if (windLevel >= 3) windStrength = 0.38;
-
-    const gust = 0.6 + 0.4 * Math.sin(tNow * 0.25);
-    const windX = Math.sin(tNow * 0.35) * windStrength * gust;
-    const windZ = Math.cos(tNow * 0.28) * windStrength * 0.55 * gust;
+    if (windLevel === 2) windStrength = 0.18;
+    if (windLevel >= 3) windStrength = 0.28;
 
     if (windStrength > 0) {
-      rb.addForce({ x: windX, y: 0, z: windZ }, true);
+      const gust = 0.6 + 0.4 * Math.sin(tNow * 0.25);
+      const wx = Math.sin(tNow * 0.35) * windStrength * gust;
+      const wz = Math.cos(tNow * 0.28) * windStrength * 0.55 * gust;
+
+      rb.addForce({ x: wx, y: 0, z: wz }, true);
 
       const vNow = rb.linvel();
-      const maxWindSpeed = windLevel === 2 ? 3.2 : 3.8;
+      const maxWindSpeed = windLevel <= 2 ? 3.0 : 3.4;
 
       rb.setLinvel(
         {
@@ -195,10 +263,14 @@ export function DroneRig({
       );
     }
 
-    // cámara follow
+    // =========================
+    // Cámara follow (rota con yaw)
+    // =========================
     if (!freeLook) {
-      camPos.current.set(pos.x, pos.y, pos.z).add(camOffset.current);
+      const offset = camOffset.current.clone().applyQuaternion(qNow.current);
+      camPos.current.set(pos.x, pos.y, pos.z).add(offset);
       camera.position.lerp(camPos.current, 0.12);
+
       camTarget.current.set(pos.x, pos.y, pos.z);
       camera.lookAt(camTarget.current);
     }
@@ -213,6 +285,7 @@ export function DroneRig({
       angularDamping={3}
       colliders="cuboid"
       ccd
+      enabledRotations={enabledRotations} // ✅ ahora sí aplicado
       userData={{ type: 'drone' }}
       onCollisionEnter={(e) => {
         const otherType = (e.other.rigidBodyObject?.userData as any)?.type;
