@@ -15,7 +15,6 @@ import { ShooterDroneRig } from './drone/ShooterDroneRig';
 import { Enemies } from './world/Enemies';
 import { BulletSystem } from './world/BulletSystem';
 
-// ✅ NUEVO: hook input shooter
 import { useShooterInput } from './useShooterInput';
 
 type Level = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
@@ -57,17 +56,29 @@ function Moon({ level }: { level: Level }) {
 }
 
 export function ShooterScene({ onBack }: { onBack: () => void }) {
+  // ✅ HIT MARKER (ADENTRO DEL COMPONENTE)
+  const [hitMarker, setHitMarker] = useState(false);
+  const hitMarkerTO = useRef<number | null>(null);
+
+  const onHitMarker = useCallback(() => {
+    setHitMarker(true);
+    if (hitMarkerTO.current) window.clearTimeout(hitMarkerTO.current);
+    hitMarkerTO.current = window.setTimeout(() => setHitMarker(false), 90);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (hitMarkerTO.current) window.clearTimeout(hitMarkerTO.current);
+    };
+  }, []);
+
   // =========================
-  // ✅ IMPORTANTE: declarar esto ARRIBA
-  // (porque se usa en el useEffect del teclado)
+  // cámara / control
   // =========================
   const [freeLook, setFreeLook] = useState(false);
   const [assistMode, setAssistMode] = useState(true);
   const [cameraMode, setCameraMode] = useState<'chase' | 'cockpit'>('chase');
 
-  // =========================
-  // Cámara free look + toggle control
-  // =========================
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.code === 'KeyC') setFreeLook((v) => !v);
@@ -78,7 +89,7 @@ export function ShooterScene({ onBack }: { onBack: () => void }) {
   }, []);
 
   // =========================
-  // Flash rojo (hit)
+  // flash rojo (hit player)
   // =========================
   const [hitFlash, setHitFlash] = useState(false);
   const hitFlashTimeout = useRef<number | null>(null);
@@ -96,7 +107,7 @@ export function ShooterScene({ onBack }: { onBack: () => void }) {
   }, []);
 
   // =========================
-  // Game state Shooter
+  // game state
   // =========================
   const MAX_HITS = 5;
   const MAX_LEVEL = 8 as const;
@@ -108,64 +119,43 @@ export function ShooterScene({ onBack }: { onBack: () => void }) {
 
   const [level, setLevel] = useState<Level>(1);
 
-  // Shooter stats
   const [ammo, setAmmo] = useState(30);
   const [kills, setKills] = useState(0);
 
-  // Progreso por nivel (kills requeridas)
   const killsAtLevelStart = useRef(0);
   const levelUpTimeoutRef = useRef<number | null>(null);
 
   const KILLS_REQUIRED = useMemo<Record<Level, number>>(
-    () => ({
-      1: 3,
-      2: 4,
-      3: 5,
-      4: 6,
-      5: 7,
-      6: 8,
-      7: 9,
-      8: 12,
-    }),
+    () => ({ 1: 3, 2: 4, 3: 5, 4: 6, 5: 7, 6: 8, 7: 9, 8: 12 }),
     []
   );
 
   const killsRequired = KILLS_REQUIRED[level];
-
-  // level cleared overlay
   const [levelCleared, setLevelCleared] = useState(false);
   const [nextLevel, setNextLevel] = useState<Level>(2);
 
-  // =========================
-  // Pose del dron (para disparos, enemigos, cockpit)
-  // =========================
+  // pose del drone
   const dronePosRef = useRef(new THREE.Vector3(0, 2, 0));
   const droneQuatRef = useRef(new THREE.Quaternion());
   const droneForwardRef = useRef(new THREE.Vector3(0, 0, -1));
 
-  // =========================
-  // Visuales por nivel
-  // =========================
   const visuals = useMemo(() => {
     const v: Record<
       Level,
       { bg: string; fog: string; env: any; skyOn: boolean; clouds: boolean; ambient: number; dir: number }
     > = {
       1: { bg: '#87ceeb', fog: '#87ceeb', env: 'sunset', skyOn: true, clouds: true, ambient: 0.35, dir: 1.2 },
-      2: { bg: '#6f7f91', fog: '#6f7f91', env: 'sunset', skyOn: true, clouds: true, ambient: 0.30, dir: 1.0 },
+      2: { bg: '#6f7f91', fog: '#6f7f91', env: 'sunset', skyOn: true, clouds: true, ambient: 0.3, dir: 1.0 },
       3: { bg: '#4c5a6b', fog: '#4c5a6b', env: 'sunset', skyOn: true, clouds: true, ambient: 0.24, dir: 0.9 },
       4: { bg: '#2b3340', fog: '#2b3340', env: 'night', skyOn: true, clouds: false, ambient: 0.18, dir: 0.75 },
       5: { bg: '#1b1f2a', fog: '#1b1f2a', env: 'night', skyOn: true, clouds: false, ambient: 0.14, dir: 0.65 },
       6: { bg: '#11131a', fog: '#11131a', env: 'night', skyOn: true, clouds: false, ambient: 0.12, dir: 0.55 },
-      7: { bg: '#080a10', fog: '#080a10', env: 'night', skyOn: false, clouds: false, ambient: 0.10, dir: 0.45 },
+      7: { bg: '#080a10', fog: '#080a10', env: 'night', skyOn: false, clouds: false, ambient: 0.1, dir: 0.45 },
       8: { bg: '#000000', fog: '#000000', env: 'night', skyOn: false, clouds: false, ambient: 0.08, dir: 0.38 },
     };
     return v[level];
   }, [level]);
 
-  // =========================
-  // Acciones
-  // =========================
   const restartAll = useCallback(() => {
     if (levelUpTimeoutRef.current) {
       window.clearTimeout(levelUpTimeoutRef.current);
@@ -189,7 +179,6 @@ export function ShooterScene({ onBack }: { onBack: () => void }) {
 
   const onHit = useCallback(() => {
     if (status !== 'playing') return;
-
     onHitFlash();
 
     setHitsLeft((h) => {
@@ -207,42 +196,30 @@ export function ShooterScene({ onBack }: { onBack: () => void }) {
     setKills((k) => k + 1);
   }, []);
 
-  // =========================
-  // ✅ Input shooter (disparo + toggle cockpit)
-  // =========================
-const shooterInput = useShooterInput();
-useEffect(() => {
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.repeat) return;
+  // input
+  const shooterInput = useShooterInput();
 
-    if (e.code === 'KeyX') {
-      // si querés que NO cambie cuando está perdido/ganado, dejalo con guard:
+  // toggle cockpit con X
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      if (e.code !== 'KeyX') return;
+
       if (!hasStarted) return;
       if (status !== 'playing') return;
       if (levelCleared) return;
 
       setCameraMode((m) => (m === 'chase' ? 'cockpit' : 'chase'));
-    }
-  };
+    };
 
-  window.addEventListener('keydown', onKeyDown);
-  return () => window.removeEventListener('keydown', onKeyDown);
-}, [hasStarted, status, levelCleared]);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [hasStarted, status, levelCleared]);
 
-  // useEffect(() => {
-  //   if (!hasStarted) return;
-  //   if (status !== 'playing') return;
-
-  //   if (shooterInput.toggleCockpitPressed) {
-  //     setCameraMode((m) => (m === 'chase' ? 'cockpit' : 'chase'));
-  //   }
-  // }, [shooterInput.toggleCockpitPressed, hasStarted, status]);
-
-  // Enter start / restart
+  // Enter start/restart
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.code !== 'Enter') return;
-
       if (!hasStarted) return restartAll();
       if (status === 'lost') return restartAll();
       if (status === 'won') return restartAll();
@@ -252,9 +229,7 @@ useEffect(() => {
     return () => window.removeEventListener('keydown', onKey);
   }, [hasStarted, status, restartAll]);
 
-  // =========================
-  // Avance de nivel por kills
-  // =========================
+  // level up
   useEffect(() => {
     if (!hasStarted) return;
     if (status !== 'playing') return;
@@ -262,11 +237,9 @@ useEffect(() => {
 
     const killsThisLevel = kills - killsAtLevelStart.current;
     if (killsThisLevel < killsRequired) return;
-
     if (levelUpTimeoutRef.current) return;
 
     const to = Math.min(level + 1, MAX_LEVEL) as Level;
-
     setNextLevel(to);
     setLevelCleared(true);
 
@@ -285,7 +258,6 @@ useEffect(() => {
       setLevelCleared(false);
 
       killsAtLevelStart.current = kills;
-
       setAmmo((a) => Math.max(a, 20));
 
       levelUpTimeoutRef.current = null;
@@ -294,16 +266,10 @@ useEffect(() => {
 
   useEffect(() => {
     return () => {
-      if (levelUpTimeoutRef.current) {
-        window.clearTimeout(levelUpTimeoutRef.current);
-        levelUpTimeoutRef.current = null;
-      }
+      if (levelUpTimeoutRef.current) window.clearTimeout(levelUpTimeoutRef.current);
     };
   }, []);
 
-  // =========================
-  // HUD Shooter
-  // =========================
   const killsThisLevel = hasStarted ? kills - killsAtLevelStart.current : 0;
 
   return (
@@ -359,160 +325,75 @@ useEffect(() => {
           </button>
         </div>
       </div>
-
-      {/* Crosshair (solo cockpit) */}
-      {cameraMode === 'cockpit' && hasStarted && status === 'playing' && !levelCleared && (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            pointerEvents: 'none',
-            zIndex: 12,
-            display: 'grid',
-            placeItems: 'center',
-            fontFamily: 'system-ui',
-            color: 'rgba(255,255,255,0.85)',
-          }}
-        >
-          <div style={{ width: 18, height: 18, border: '2px solid rgba(255,255,255,0.75)', borderRadius: 999 }} />
-        </div>
-      )}
-
-      {/* Nivel completado */}
-      {levelCleared && status === 'playing' && (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            display: 'grid',
-            placeItems: 'center',
-            zIndex: 40,
-            pointerEvents: 'none',
-            fontFamily: 'system-ui',
-            color: 'white',
-            textShadow: '0 2px 12px rgba(0,0,0,0.6)',
-            background: 'rgba(0,0,0,0.35)',
-          }}
-        >
+        {/* Crosshair (solo cockpit) */}
+    {cameraMode === 'cockpit' && hasStarted && status === 'playing' && !levelCleared && (
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          pointerEvents: 'none',
+          zIndex: 12,
+          display: 'grid',
+          placeItems: 'center',
+          fontFamily: 'system-ui',
+        }}
+      >
+        <div style={{ position: 'relative', width: 24, height: 24 }}>
           <div
             style={{
-              background: 'rgba(0,0,0,0.55)',
-              padding: '18px 22px',
-              borderRadius: 16,
-              textAlign: 'center',
-              minWidth: 340,
+              position: 'absolute',
+              left: '50%',
+              top: 0,
+              bottom: 0,
+              width: 2,
+              transform: 'translateX(-50%)',
+              background: 'rgba(255,255,255,0.75)',
             }}
-          >
-            <div style={{ fontSize: 26, fontWeight: 900 }}>✅ NIVEL COMPLETADO</div>
-            <div style={{ marginTop: 10, opacity: 0.9, fontSize: 14 }}>
-              Preparando <b>Nivel {nextLevel}</b>…
-            </div>
-          </div>
+          />
+          <div
+            style={{
+              position: 'absolute',
+              top: '50%',
+              left: 0,
+              right: 0,
+              height: 2,
+              transform: 'translateY(-50%)',
+              background: 'rgba(255,255,255,0.75)',
+            }}
+          />
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              width: 6,
+              height: 6,
+              borderRadius: 999,
+              transform: 'translate(-50%,-50%)',
+              border: '2px solid rgba(255,255,255,0.8)',
+            }}
+          />
         </div>
-      )}
+      </div>
+    )}
 
-      {/* Start */}
-      {!hasStarted && (
+     
+
+      {/* HIT MARKER (cuando pegás a un enemigo) */}
+      {hitMarker && cameraMode === 'cockpit' && (
         <div
           style={{
             position: 'absolute',
             inset: 0,
+            pointerEvents: 'none',
+            zIndex: 13,
             display: 'grid',
             placeItems: 'center',
-            zIndex: 20,
-            pointerEvents: 'none',
-            fontFamily: 'system-ui',
-            color: 'white',
-            textShadow: '0 2px 12px rgba(0,0,0,0.5)',
           }}
         >
-          <div
-            style={{
-              background: 'rgba(0,0,0,0.35)',
-              padding: '18px 22px',
-              borderRadius: 16,
-              textAlign: 'center',
-            }}
-          >
-            <div style={{ fontSize: 28, fontWeight: 800 }}>🚁 Drone Shooter</div>
-            <div style={{ marginTop: 8, opacity: 0.9 }}>
-              Flechas mover — R/F subir/bajar — Q/E girar — Space disparar — X cockpit
-            </div>
-            <div style={{ marginTop: 12, fontSize: 16, fontWeight: 700 }}>
-              Presioná{' '}
-              <span style={{ padding: '2px 8px', borderRadius: 8, background: 'rgba(255,255,255,0.15)' }}>
-                Enter
-              </span>{' '}
-              para empezar
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Game Over */}
-      {hasStarted && status === 'lost' && (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            display: 'grid',
-            placeItems: 'center',
-            zIndex: 30,
-            pointerEvents: 'none',
-            fontFamily: 'system-ui',
-            color: 'white',
-            textShadow: '0 2px 12px rgba(0,0,0,0.5)',
-          }}
-        >
-          <div
-            style={{
-              background: 'rgba(0,0,0,0.45)',
-              padding: '22px 26px',
-              borderRadius: 18,
-              textAlign: 'center',
-              minWidth: 340,
-            }}
-          >
-            <div style={{ fontSize: 34, fontWeight: 900 }}>💥 GAME OVER</div>
-            <div style={{ marginTop: 10, opacity: 0.9 }}>
-              Presioná <b>Enter</b> para reiniciar
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* WON */}
-      {hasStarted && status === 'won' && (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            display: 'grid',
-            placeItems: 'center',
-            zIndex: 60,
-            pointerEvents: 'none',
-            fontFamily: 'system-ui',
-            color: 'white',
-            textShadow: '0 2px 12px rgba(0,0,0,0.7)',
-            background: 'rgba(0,0,0,0.55)',
-          }}
-        >
-          <div
-            style={{
-              background: 'rgba(0,0,0,0.7)',
-              padding: '22px 26px',
-              borderRadius: 18,
-              textAlign: 'center',
-              minWidth: 380,
-            }}
-          >
-            <div style={{ fontSize: 34, fontWeight: 950 }}>🏁 COMPLETADO</div>
-            <div style={{ marginTop: 10, opacity: 0.9 }}>
-              Terminaste el <b>Nivel 8</b>.
-            </div>
-            <div style={{ marginTop: 12, opacity: 0.95 }}>
-              Presioná <b>Enter</b> para reiniciar todo
-            </div>
+          <div style={{ position: 'relative', width: 18, height: 18 }}>
+            <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 2, transform: 'translateX(-50%) rotate(45deg)', background: 'rgba(255,255,255,0.95)' }} />
+            <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 2, transform: 'translateX(-50%) rotate(-45deg)', background: 'rgba(255,255,255,0.95)' }} />
           </div>
         </div>
       )}
@@ -529,7 +410,145 @@ useEffect(() => {
           }}
         />
       )}
+{/* LEVEL CLEARED */}
+{levelCleared && status === 'playing' && (
+  <div
+    style={{
+      position: 'absolute',
+      inset: 0,
+      display: 'grid',
+      placeItems: 'center',
+      zIndex: 40,
+      pointerEvents: 'none',
+      fontFamily: 'system-ui',
+      color: 'white',
+      textShadow: '0 2px 12px rgba(0,0,0,0.6)',
+      background: 'rgba(0,0,0,0.35)',
+    }}
+  >
+    <div
+      style={{
+        background: 'rgba(0,0,0,0.55)',
+        padding: '18px 22px',
+        borderRadius: 16,
+        textAlign: 'center',
+        minWidth: 340,
+      }}
+    >
+      <div style={{ fontSize: 26, fontWeight: 900 }}>✅ NIVEL COMPLETADO</div>
+      <div style={{ marginTop: 10, opacity: 0.9, fontSize: 14 }}>
+        Preparando <b>Nivel {nextLevel}</b>…
+      </div>
+    </div>
+  </div>
+)}
 
+{/* START */}
+{!hasStarted && (
+  <div
+    style={{
+      position: 'absolute',
+      inset: 0,
+      display: 'grid',
+      placeItems: 'center',
+      zIndex: 30,
+      pointerEvents: 'none',
+      fontFamily: 'system-ui',
+      color: 'white',
+      textShadow: '0 2px 12px rgba(0,0,0,0.5)',
+    }}
+  >
+    <div
+      style={{
+        background: 'rgba(0,0,0,0.35)',
+        padding: '18px 22px',
+        borderRadius: 16,
+        textAlign: 'center',
+      }}
+    >
+      <div style={{ fontSize: 28, fontWeight: 800 }}>🚁 Drone Shooter</div>
+      <div style={{ marginTop: 8, opacity: 0.9 }}>
+        Flechas mover — R/F subir/bajar — Q/E girar — Space disparar — X cockpit
+      </div>
+      <div style={{ marginTop: 12, fontSize: 16, fontWeight: 700 }}>
+        Presioná{' '}
+        <span style={{ padding: '2px 8px', borderRadius: 8, background: 'rgba(255,255,255,0.15)' }}>
+          Enter
+        </span>{' '}
+        para empezar
+      </div>
+    </div>
+  </div>
+)}
+
+{/* GAME OVER */}
+{hasStarted && status === 'lost' && (
+  <div
+    style={{
+      position: 'absolute',
+      inset: 0,
+      display: 'grid',
+      placeItems: 'center',
+      zIndex: 60, // 👈 bien arriba de todo
+      pointerEvents: 'none',
+      fontFamily: 'system-ui',
+      color: 'white',
+      textShadow: '0 2px 12px rgba(0,0,0,0.5)',
+      background: 'rgba(0,0,0,0.25)',
+    }}
+  >
+    <div
+      style={{
+        background: 'rgba(0,0,0,0.55)',
+        padding: '22px 26px',
+        borderRadius: 18,
+        textAlign: 'center',
+        minWidth: 340,
+      }}
+    >
+      <div style={{ fontSize: 34, fontWeight: 900 }}>💥 GAME OVER</div>
+      <div style={{ marginTop: 10, opacity: 0.9 }}>
+        Presioná <b>Enter</b> para reiniciar
+      </div>
+    </div>
+  </div>
+)}
+
+{/* WON */}
+{hasStarted && status === 'won' && (
+  <div
+    style={{
+      position: 'absolute',
+      inset: 0,
+      display: 'grid',
+      placeItems: 'center',
+      zIndex: 60,
+      pointerEvents: 'none',
+      fontFamily: 'system-ui',
+      color: 'white',
+      textShadow: '0 2px 12px rgba(0,0,0,0.7)',
+      background: 'rgba(0,0,0,0.55)',
+    }}
+  >
+    <div
+      style={{
+        background: 'rgba(0,0,0,0.7)',
+        padding: '22px 26px',
+        borderRadius: 18,
+        textAlign: 'center',
+        minWidth: 380,
+      }}
+    >
+      <div style={{ fontSize: 34, fontWeight: 950 }}>🏁 COMPLETADO</div>
+      <div style={{ marginTop: 10, opacity: 0.9 }}>
+        Terminaste el <b>Nivel 8</b>.
+      </div>
+      <div style={{ marginTop: 12, opacity: 0.95 }}>
+        Presioná <b>Enter</b> para reiniciar todo
+      </div>
+    </div>
+  </div>
+)}
       <Canvas camera={{ position: [0, 3, 8], fov: 60 }} shadows>
         <color attach="background" args={[visuals.bg]} />
         <fog attach="fog" args={[visuals.fog, 25, 180]} />
@@ -578,21 +597,12 @@ useEffect(() => {
             <Ground />
             <SafePad />
 
-            {/* minas existentes (daño) */}
             <Obstacles level={Math.min(3, level)} onHit={onHit} />
 
-            {/* ammo pickups */}
             <AmmoPickups level={level} runId={resetSignal} onCollect={onAmmoCollect} />
 
-            {/* enemigos (3 al inicio, escala por level) */}
-            <Enemies
-              level={level}
-              runId={resetSignal}
-              playerPosRef={dronePosRef}
-              onEnemyKilled={onEnemyKilled}
-            />
+            <Enemies level={level} runId={resetSignal} playerPosRef={dronePosRef} onEnemyKilled={onEnemyKilled} />
 
-            {/* sistema de balas (player + enemy), colisiones y daño */}
             <BulletSystem
               runId={resetSignal}
               level={level}
@@ -601,13 +611,13 @@ useEffect(() => {
               playerQuatRef={droneQuatRef}
               playerForwardRef={droneForwardRef}
               ammo={ammo}
+              onEnemyHit={onHitMarker} // ✅ acá
               onConsumeAmmo={() => setAmmo((a) => Math.max(0, a - 1))}
               onHitPlayer={onHit}
               onEnemyKilled={onEnemyKilled}
               shooterInput={shooterInput}
             />
 
-            {/* drone shooter (camuflado) */}
             <ShooterDroneRig
               freeLook={freeLook}
               resetSignal={resetSignal}
@@ -626,14 +636,7 @@ useEffect(() => {
             />
           </Physics>
 
-          <OrbitControls
-            enabled={freeLook}
-            enablePan={false}
-            maxPolarAngle={Math.PI / 2}
-            minDistance={3}
-            maxDistance={30}
-          />
-
+          <OrbitControls enabled={freeLook} enablePan={false} maxPolarAngle={Math.PI / 2} minDistance={3} maxDistance={30} />
           <Preload all />
         </Suspense>
       </Canvas>

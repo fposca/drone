@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 
 type Level = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
-type Enemy = {
+export type Enemy = {
   id: number;
   pos: THREE.Vector3;
   alive: boolean;
@@ -14,28 +15,76 @@ type Enemy = {
 type Props = {
   level: Level;
   runId: number;
-  playerPosRef: React.MutableRefObject<THREE.Vector3>;
-  onEnemyKilled: () => void;
+  playerPosRef: React.MutableRefObject<THREE.Vector3>; // (por ahora no se usa acá, lo dejamos)
+  onEnemyKilled: () => void; // (lo sigue usando tu lógica de score, aunque el kill real lo decide BulletSystem)
 };
 
-// Este componente SOLO renderiza y mantiene un registro de enemigos.
-// La lógica de disparo / colisiones va en BulletSystem (para centralizar).
-export function Enemies({ level, runId, onEnemyKilled }: Props) {
-  const enemiesRef = (globalThis as any).__enemiesRef as React.MutableRefObject<Enemy[]> | undefined;
+type Explosion = {
+  id: number;
+  pos: THREE.Vector3;
+  t: number;
+  dur: number;
+  // mini partículas
+  dirs: THREE.Vector3[];
+};
 
-  // Creamos un ref global “privado” para que BulletSystem pueda leerlo sin prop drilling.
-  // Si no te gusta, después lo pasamos como prop normal.
-  const localRef = useRef<Enemy[]>([]);
-  (globalThis as any).__enemiesRef = localRef;
+export function Enemies({ level, runId }: Props) {
+  // Enemies “viven” en un ref global para que BulletSystem los lea
+  const enemiesRef = useRef<Enemy[]>([]);
+  (globalThis as any).__enemiesRef = enemiesRef;
 
-  // seed simple
+  // “tick” para forzar re-render cuando BulletSystem muta el ref
+  const [, bump] = useState(0);
+  useEffect(() => {
+    (globalThis as any).__enemiesBump = () => bump((v) => v + 1);
+    return () => {
+      if ((globalThis as any).__enemiesBump) delete (globalThis as any).__enemiesBump;
+    };
+  }, []);
+
+  // Explosiones (estado real, para que React renderice)
+  const [explosions, setExplosions] = useState<Explosion[]>([]);
+  useEffect(() => {
+    (globalThis as any).__spawnEnemyExplosion = (p: THREE.Vector3) => {
+      const id = Math.floor(Math.random() * 1e9);
+      const dirs = Array.from({ length: 10 }, () => {
+        const v = new THREE.Vector3(Math.random() - 0.5, Math.random() * 0.9, Math.random() - 0.5);
+        return v.normalize().multiplyScalar(1.4 + Math.random() * 1.6);
+      });
+
+      setExplosions((arr) => [
+        ...arr,
+        {
+          id,
+          pos: p.clone(),
+          t: 0,
+          dur: 0.45,
+          dirs,
+        },
+      ]);
+    };
+
+    return () => {
+      if ((globalThis as any).__spawnEnemyExplosion) delete (globalThis as any).__spawnEnemyExplosion;
+    };
+  }, []);
+
+  // seed estable
   const seed = useMemo(() => 2000 + runId * 333 + level * 17, [runId, level]);
 
   useEffect(() => {
-    // respawn por runId/level
     const rand = mulberry32(seed);
 
-    const baseCount = level === 1 ? 3 : level === 2 ? 4 : level === 3 ? 5 : level === 4 ? 6 : level === 5 ? 7 : level === 6 ? 8 : level === 7 ? 9 : 10;
+    const baseCount =
+      level === 1 ? 3 :
+      level === 2 ? 4 :
+      level === 3 ? 5 :
+      level === 4 ? 6 :
+      level === 5 ? 7 :
+      level === 6 ? 8 :
+      level === 7 ? 9 : 10;
+
+    const hpBase = level <= 3 ? 1 : level <= 6 ? 2 : 3;
 
     const list: Enemy[] = [];
     for (let i = 0; i < baseCount; i++) {
@@ -47,19 +96,35 @@ export function Enemies({ level, runId, onEnemyKilled }: Props) {
         id: i,
         pos: new THREE.Vector3(x, y, z),
         alive: true,
-        hp: 1,
+        hp: hpBase,
         fireCooldown: 0.7 + rand() * 0.6,
       });
     }
 
-    localRef.current = list;
+    enemiesRef.current = list;
+
+    // limpiamos explosiones al reiniciar run/level
+    setExplosions([]);
+    // fuerza render
+    bump((v) => v + 1);
   }, [seed]);
 
-  // Render simple (sin rapier): meshes en posiciones del ref.
-  // Si después querés rapier para enemigos, lo hacemos en una iteración.
+  // animación de explosiones
+  useFrame((_, dt) => {
+    if (!explosions.length) return;
+
+    setExplosions((arr) => {
+      const next = arr
+        .map((e) => ({ ...e, t: e.t + dt }))
+        .filter((e) => e.t < e.dur);
+      return next;
+    });
+  });
+
   return (
     <>
-      {localRef.current.map((e) =>
+      {/* Enemigos vivos */}
+      {enemiesRef.current.map((e) =>
         e.alive ? (
           <group key={`${runId}-${level}-${e.id}`} position={[e.pos.x, e.pos.y, e.pos.z]}>
             <mesh castShadow>
@@ -73,6 +138,7 @@ export function Enemies({ level, runId, onEnemyKilled }: Props) {
               />
             </mesh>
 
+            {/* “ojo” */}
             <mesh position={[0, 0.15, 0.45]}>
               <sphereGeometry args={[0.12, 16, 12]} />
               <meshStandardMaterial emissive="#00ff66" emissiveIntensity={2.0} color="#00ff66" />
@@ -85,6 +151,33 @@ export function Enemies({ level, runId, onEnemyKilled }: Props) {
           </group>
         ) : null
       )}
+
+      {/* Explosiones */}
+      {explosions.map((ex) => {
+        const a = 1 - ex.t / ex.dur;
+        const r = 0.35 + ex.t * 2.2;
+
+        return (
+          <group key={ex.id} position={[ex.pos.x, ex.pos.y, ex.pos.z]}>
+            {/* flash */}
+            <mesh>
+              <sphereGeometry args={[r, 16, 12]} />
+              <meshBasicMaterial transparent opacity={0.25 * a} toneMapped={false} />
+            </mesh>
+
+            {/* partículas */}
+            {ex.dirs.map((d, i) => {
+              const p = d.clone().multiplyScalar(ex.t * 2.2);
+              return (
+                <mesh key={i} position={[p.x, p.y, p.z]}>
+                  <sphereGeometry args={[0.06, 10, 8]} />
+                  <meshBasicMaterial transparent opacity={0.85 * a} toneMapped={false} />
+                </mesh>
+              );
+            })}
+          </group>
+        );
+      })}
     </>
   );
 }
